@@ -1,0 +1,1 @@
+"""Offline tests using synthetic observations and isolated temporary files."""
