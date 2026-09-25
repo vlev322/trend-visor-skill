@@ -23,10 +23,26 @@ def fetch_response(
     user_agent: str,
     timeout: float = 30.0,
 ) -> RawResponse:
+    try:
+        return fetch_url(request.url, user_agent=user_agent, timeout=timeout)
+    except PageviewsError as error:
+        if error.code == "http_error" and error.details.get("http_status") == 404:
+            raise PageviewsError(
+                "data_unavailable",
+                "Wikimedia returned no series: 404 can mean zero views or data not "
+                "loaded. It does not establish article absence.",
+                details=error.details,
+            ) from error
+        raise
+
+
+def fetch_url(
+    url: str, *, user_agent: str, timeout: float = 30.0
+) -> RawResponse:
     if not math.isfinite(timeout) or timeout <= 0:
         raise PageviewsError("invalid_request", "timeout must be positive and finite.")
     http_request = Request(
-        request.url,
+        url,
         headers={
             "User-Agent": validate_user_agent(user_agent),
             "Accept": "application/json",
@@ -38,22 +54,15 @@ def fetch_response(
                 raise PageviewsError(
                     "http_error",
                     "Expected HTTP 200 from Wikimedia.",
-                    details={"http_status": response.status, "url": request.url},
+                    details={"http_status": response.status, "url": url},
                 )
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as error:
-        details = {"http_status": error.code, "url": request.url}
+        details = {"http_status": error.code, "url": url}
         retry_after = error.headers.get("Retry-After") if error.headers else None
         if retry_after is not None:
             details["retry_after"] = retry_after
         error.close()
-        if error.code == 404:
-            raise PageviewsError(
-                "data_unavailable",
-                "Wikimedia returned no series: 404 can mean zero views or data not "
-                "loaded. It does not establish article absence.",
-                details=details,
-            ) from error
         if error.code == 429:
             raise PageviewsError(
                 "rate_limited",
@@ -67,14 +76,14 @@ def fetch_response(
         raise PageviewsError(
             "network_error",
             "Could not complete the Wikimedia request; no automatic retry was made.",
-            details={"url": request.url, "exception_type": type(error).__name__},
+            details={"url": url, "exception_type": type(error).__name__},
         ) from error
     if len(body) > MAX_RESPONSE_BYTES:
         raise PageviewsError(
             "response_too_large", "Response exceeds 10 MiB; request a smaller window."
         )
     return RawResponse(
-        url=request.url,
+        url=url,
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         body=body,
     )

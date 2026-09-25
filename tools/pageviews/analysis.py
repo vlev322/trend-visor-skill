@@ -147,6 +147,14 @@ def compare_means(
     return result
 
 
+def validate_period_order(baseline_period: Period, current_period: Period) -> None:
+    if baseline_period.end >= current_period.start:
+        raise PageviewsError(
+            "invalid_request",
+            "The baseline must precede the current period without overlapping dates.",
+        )
+
+
 def analyze_series(
     series: ValidatedSeries,
     baseline_period: Period,
@@ -154,11 +162,7 @@ def analyze_series(
     *,
     include_monthly: bool = False,
 ) -> dict[str, object]:
-    if baseline_period.end >= current_period.start:
-        raise PageviewsError(
-            "invalid_request",
-            "The baseline must precede the current period without overlapping dates.",
-        )
+    validate_period_order(baseline_period, current_period)
     baseline = summarize_period(series, baseline_period)
     current = summarize_period(series, current_period)
     if baseline.observed_days + current.observed_days == 0:

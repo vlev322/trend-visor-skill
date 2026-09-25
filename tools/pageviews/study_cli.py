@@ -1,0 +1,64 @@
+from collections.abc import Sequence
+from pathlib import Path
+from uuid import uuid4
+
+from .analysis import Period
+from .artifacts import json_output_path, save_json_artifact
+from .cli_common import JsonArgumentParser, print_error, print_result
+from .errors import PageviewsError
+from .models import parse_date
+from .resolutions import read_resolution
+from .studies import run_study
+
+ASSETS = Path(__file__).resolve().parents[2] / "assets"
+
+
+def _parser() -> JsonArgumentParser:
+    parser = JsonArgumentParser(
+        prog="python3 -m tools.pageviews study",
+        description="Collect and analyze one reviewed topic across all requested languages.",
+    )
+    parser.add_argument("--resolution", type=Path, required=True, help="Saved resolve --output JSON")
+    parser.add_argument(
+        "--confirm-sha256", required=True,
+        help="resolution_sha256 from the reviewed file; explicitly confirms all matched articles",
+    )
+    for name in ("baseline-start", "baseline-end", "current-start", "current-end"):
+        parser.add_argument(f"--{name}", required=True, help="Inclusive UTC date, YYYY-MM-DD")
+    parser.add_argument("--as-of", required=True, help="Explicit reference UTC date, YYYY-MM-DD")
+    parser.add_argument("--lag-days", type=int, default=7, help="Exclude reference day plus N completed days")
+    parser.add_argument("--cache-dir", type=Path, default=ASSETS / "pageviews", help="Exact-request snapshot cache")
+    parser.add_argument("--user-agent", help="Required online: descriptive identifier with real contact")
+    parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout per request in seconds")
+    parser.add_argument("--offline", action="store_true", help="Read only exact cached requests; never use HTTP")
+    parser.add_argument("--refresh", action="store_true", help="Fetch new snapshots; preserve old snapshots")
+    parser.add_argument("--monthly", action="store_true", help="Include calendar-month summaries")
+    parser.add_argument("--output", type=Path, help="New study JSON; default: unique assets/studies file")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        args = _parser().parse_args(argv)
+        output = json_output_path(args.output or ASSETS / "studies" / f"study-{uuid4().hex}.json")
+        plan = read_resolution(args.resolution, args.confirm_sha256)
+        baseline = Period(
+            parse_date(args.baseline_start, "baseline_start"),
+            parse_date(args.baseline_end, "baseline_end"),
+        )
+        current = Period(
+            parse_date(args.current_start, "current_start"),
+            parse_date(args.current_end, "current_end"),
+        )
+        result = run_study(
+            plan, baseline, current, as_of=args.as_of, lag_days=args.lag_days,
+            cache_dir=args.cache_dir, user_agent=args.user_agent, timeout=args.timeout,
+            offline=args.offline, refresh=args.refresh, include_monthly=args.monthly,
+        )
+        saved = save_json_artifact(result, output)
+        result["artifacts"] = {"study": str(saved.path), "study_sha256": saved.sha256}
+    except PageviewsError as error:
+        return print_error(error)
+    print_result(result)
+    summary = result["summary"]
+    return 1 if summary["failed_collections"] or summary["failed_resolution_checks"] else 0

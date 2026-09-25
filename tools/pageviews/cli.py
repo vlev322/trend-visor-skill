@@ -7,11 +7,14 @@ from pathlib import Path
 
 from . import SCHEMA_VERSION, __version__
 from .analysis_cli import main as analyze_main
+from .chart_cli import main as chart_main
 from .cli_common import JsonArgumentParser, print_error, print_result
 from .client import fetch_response, validate_user_agent
 from .errors import PageviewsError
 from .models import build_request
 from .storage import load_snapshot, save_snapshot
+from .study_cli import main as study_main
+from .topic_cli import main as topic_main
 from .validation import validate_response
 
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[2] / "assets" / "pageviews"
@@ -30,7 +33,8 @@ def _positive_timeout(value: str) -> float:
 def _parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         description="Download and validate daily pageviews for one confirmed article.",
-        epilog="For offline analysis: python3 -m tools.pageviews analyze --help",
+        epilog="Other operations: python3 -m tools.pageviews "
+        "{search,resolve,study,analyze,chart} --help",
     )
     parser.add_argument("--project", required=True, help="e.g. cs.wikipedia.org")
     parser.add_argument(
@@ -78,6 +82,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments and arguments[0] == "analyze":
         return analyze_main(arguments[1:])
+    if arguments and arguments[0] == "chart":
+        return chart_main(arguments[1:])
+    if arguments and arguments[0] == "study":
+        return study_main(arguments[1:])
+    if arguments and arguments[0] in {"search", "resolve"}:
+        return topic_main(arguments[0], arguments[1:])
     try:
         args = _parser().parse_args(arguments)
         user_agent = validate_user_agent(args.user_agent)

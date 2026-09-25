@@ -2,4 +2,7 @@
 __pycache__/
 *.py[cod]
 assets/pageviews/
+assets/charts/
+assets/resolutions/
+assets/studies/
 .DS_Store
