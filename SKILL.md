@@ -1,6 +1,6 @@
 ---
 name: trend-visor
-description: Run confirmed multilingual Wikipedia pageview studies. Find Wikidata topics, verify articles and compare explicit periods across language editions. Use for traffic comparisons, repeat queries, missing dates, calendar seasonality, sensitivity checks, conditional trend intervals or unsmoothed PNG charts. Separates descriptive changes from an optional historical slope model; does not forecast product demand or generate PDFs.
+description: Run confirmed multilingual Wikipedia pageview studies. Find Wikidata topics, verify articles and compare explicit periods across language editions. Use for traffic comparisons, repeat queries, missing dates, calendar seasonality, sensitivity checks, conditional trend intervals, unsmoothed PNG charts or offline descriptive Markdown reports. Separates descriptive changes from an optional historical slope model; does not forecast product demand or generate PDFs.
 compatibility: Requires Python 3.11 or newer. Core and calendar comparisons use the standard library. Optional charts, statistics and model-evaluation dependencies are locked with uv. Wikimedia lookup and downloads need network, not saved-data analysis. Only the optional external-model test requires a provider API key.
 metadata:
   author: Vladyslav Levchenko
@@ -86,6 +86,23 @@ Collection is sequential: at most one pageview request per matched article, cove
 - Add `--monthly` for calendar-month detail. Use each analyzed row's snapshot with `analyze --diagnostics` or `chart` for further inspection; `study` does not automatically create charts or PDFs.
 
 Exit 1 accompanies per-language collection failures or unresolved technical lookup failures while preserving useful JSON. Semantic non-matches or incomplete coverage alone do not cause exit 1. Correct input errors (exit 2) before retrying.
+
+## Build a descriptive text report offline
+
+Use `report` after a saved study when the user needs a readable Ukrainian Markdown summary or a compact page of verified evidence. This first report version accepts the existing general-purpose `study` format (one confirmed topic, requested languages, two explicit periods), not evaluation profiles or `live.json`. It is not yet an unrestricted research agent or a replacement for detailed methodology review.
+
+1. Supply `--study` and its exact `artifacts.study_sha256`, plus the user's `--question` as single-line text (up to 1000 characters). The referenced resolution and exact snapshots must remain readable. `--criterion` may be repeated up to five times (200 characters each): it records the user's words, **not** an automatically approved ranking formula.
+2. Optionally supply `--output NEW.json` for the full report/evidence/audit and `--markdown NEW.md` for the readable text. Without these flags, no files are written. Outputs must be new paths outside snapshots; each file is published independently without overwrite. A later filesystem failure can leave an earlier completed output intact, not a partially written file.
+3. Read the stdout evidence page, not the entire saved report. It includes one language by default; `--limit` accepts 1–3. `total_rows`, `offset` and `next_offset` describe pagination in requested-language order. Use `--offset <next_offset>` with the same study/checksum/question/criteria and **omit output flags** to inspect another page without writing or fetching. Do not infer a whole-study conclusion from only the first page. Evidence IDs bind each language to the source study checksum; `report_id` also includes report version, question and criteria.
+4. Share the Markdown and review its limitations. `completed` means report generation succeeded, not that a business recommendation or human review passed. `narrative_review_required` remains true. Without an operationalized criterion, `prioritization` is `needs_criteria` or `criteria_require_review`; do not invent a language winner.
+
+`python3 -m tools.pageviews report --study "<saved-study.json>" --study-sha256 "<study-sha256>" --question "<user question>" --output assets/reports/summary.json --markdown assets/reports/summary.md`
+
+The loader checks the study checksum, original resolution mapping and snapshot identity, raw checksums and saved coverage. It recomputes the per-language descriptive analysis (including monthly detail when recorded) and verifies recorded calendar comparisons. Contradictory consumed values fail with `report_source_error`, not silent repair. The report constructs its own language summaries rather than copying the stored top-level comparison/summary. Collection failures are preserved recorded outcomes, not independently repeated requests. Checksums detect local inconsistencies, not deliberate coordinated edits or proof of human approval.
+
+Daily/monthly arrays, calendar-pair lists, resolution excerpts and full audit paths stay outside the stdout evidence. Successful stdout, including artifact locators and JSON formatting, is limited to **12000 UTF-8 bytes**; oversized responses fail with `evidence_too_large` before writes rather than silently dropping fields. Reduce page size or explicitly simplify question/criteria if necessary. This is a byte bound, **not a model-token budget**: the host must still account for instructions, tool schemas, history and output reserve. Existing live-evaluation history accumulation has not yet been replaced by this interface.
+
+The report does **not** refit, independently validate or reproduce a recorded statistical slope/interval. When a study requested a model, `recorded_model: not_revalidated_not_reported` and the text disclose its exclusion; the conclusion is descriptive only. Detailed sensitivity sidecars and PNG linking are not imported by this first increment; use the existing `analyze --diagnostics` and `chart` operations separately without pretending the report verified them. PDF remains deferred until the text workflow is accepted. Report generation needs no optional dependencies, provider credentials or network.
 
 ## Collection workflow
 
@@ -306,7 +323,11 @@ Each replay writes a new `assets/evaluations/final-replay-*.json` (or `--output 
 - [resolutions.py](tools/pageviews/resolutions.py): saved mapping validation and exact-byte confirmation.
 - [studies.py](tools/pageviews/studies.py): multilingual collection, cache/failure policy and descriptive comparison table.
 - [study_cli.py](tools/pageviews/study_cli.py): confirmed study arguments and saved results.
-- [artifacts.py](tools/pageviews/artifacts.py): JSON checksums, protected paths and no-overwrite publication.
+- [report_sources.py](tools/pageviews/report_sources.py): pinned study/resolution/snapshot verification and raw-derived descriptive evidence.
+- [reports.py](tools/pageviews/reports.py): general descriptive Markdown reports and bounded, paginated language evidence.
+- [report_cli.py](tools/pageviews/report_cli.py): offline report command, optional output files and compact stdout.
+- [narrative.py](tools/pageviews/narrative.py): shared factual period direction, daily units and descriptive wording used by reports and v4 evaluation.
+- [artifacts.py](tools/pageviews/artifacts.py): JSON/Markdown checksums, protected paths and no-overwrite publication.
 - [validation.py](tools/pageviews/validation.py): response validation and calendar coverage.
 - [storage.py](tools/pageviews/storage.py): immutable snapshots and exact-request reuse.
 - [cli.py](tools/pageviews/cli.py): argument parsing and orchestration.
