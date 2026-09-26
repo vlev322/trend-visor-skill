@@ -12,6 +12,8 @@ from .errors import PageviewsError
 from .models import PageviewsRequest, RawResponse, build_request
 from .validation import ValidatedSeries, validate_response
 
+LEGACY_CACHE_PROCESSOR_VERSIONS = ("0.0.1",)
+
 
 def _json_bytes(value: object) -> bytes:
     text = json.dumps(
@@ -23,7 +25,16 @@ def _json_bytes(value: object) -> bytes:
 def _request_directory(root: Path, request: PageviewsRequest) -> Path:
     identity = {
         "schema_version": SCHEMA_VERSION,
-        "processor_version": __version__,
+        "request": request.as_dict(),
+    }
+    key = hashlib.sha256(_json_bytes(identity)).hexdigest()
+    return root.resolve() / key
+
+
+def _legacy_request_directory(root: Path, request: PageviewsRequest, processor_version: str) -> Path:
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "processor_version": processor_version,
         "request": request.as_dict(),
     }
     key = hashlib.sha256(_json_bytes(identity)).hexdigest()
@@ -119,7 +130,8 @@ def _read_metadata(
     if (
         type(metadata.get("schema_version")) is not int
         or metadata.get("schema_version") != SCHEMA_VERSION
-        or metadata.get("processor_version") != __version__
+        or not isinstance(metadata.get("processor_version"), str)
+        or not metadata["processor_version"]
     ):
         raise ValueError("Unsupported snapshot version.")
     return metadata
@@ -248,13 +260,19 @@ def read_snapshot(directory: Path) -> Snapshot:
 
 def load_snapshot(root: Path, request: PageviewsRequest) -> Snapshot | None:
     try:
-        directory = _request_directory(root, request)
-        try:
-            pointer_bytes = (directory / "latest.json").read_bytes()
-        except FileNotFoundError:
-            return None
-        pointer = json.loads(pointer_bytes)
-        return _read_snapshot(directory, pointer, request)
+        directories = [_request_directory(root, request)]
+        directories.extend(
+            _legacy_request_directory(root, request, version)
+            for version in LEGACY_CACHE_PROCESSOR_VERSIONS
+        )
+        for directory in directories:
+            try:
+                pointer_bytes = (directory / "latest.json").read_bytes()
+            except FileNotFoundError:
+                continue
+            pointer = json.loads(pointer_bytes)
+            return _read_snapshot(directory, pointer, request)
+        return None
     except (OSError, ValueError) as error:
         raise PageviewsError(
             "cache_error",

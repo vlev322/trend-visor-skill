@@ -98,6 +98,20 @@ class ModelClientTests(unittest.TestCase):
                 self.assertNotIn("fixture-api-key", json.dumps(caught.exception.as_dict()))
                 self.assertEqual(len(requests), 1)
 
+    def test_malformed_success_response_is_a_structured_error_without_retry(self):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return self.http.Response(200, content=b"{malformed", headers={"content-type": "application/json"})
+
+        with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
+            with self.assertRaises(PageviewsError) as caught:
+                client.complete([{"role": "user", "content": "Fixture"}], None)
+        self.assertEqual(caught.exception.code, "model_response_error")
+        self.assertNotIn("malformed", str(caught.exception))
+        self.assertEqual(len(requests), 1)
+
     def test_final_response_uses_native_json_schema_without_tools(self):
         requests = []
         response_format = {"type": "json_schema", "json_schema": {

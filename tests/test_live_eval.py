@@ -38,6 +38,17 @@ def model_call(arguments):
     }
 
 
+def resume_checkpoint():
+    return {
+        "phase": "discover", "status": "needs_user_input", "scope": {},
+        "skill_sha256": "0" * 64, "adapter_instructions": "Fixture",
+        "model_calls": 1, "events": [{
+            "response": {"finish_reason": "stop", "message": {"content": "Уточніть тему.", "tool_calls": []}},
+        }],
+        "operation_results": {},
+    }
+
+
 class LiveDiscoveryTests(unittest.TestCase):
     @patch("tools.pageviews.client.urlopen")
     def test_discovery_reuses_real_cli_and_stops_before_collection(self, network):
@@ -198,13 +209,57 @@ class LiveDiscoveryTests(unittest.TestCase):
     def test_resume_file_is_bound_to_its_exact_checksum(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "live.json"
-            body = b'{"status":"needs_user_input"}'
+            body = json.dumps(resume_checkpoint()).encode()
             path.write_bytes(body)
             checksum = hashlib.sha256(body).hexdigest()
             self.assertEqual(read_resume(path, checksum)["status"], "needs_user_input")
             path.write_bytes(body + b"\n")
             with self.assertRaises(PageviewsError):
                 read_resume(path, checksum)
+
+    def test_malformed_resume_checksum_is_a_structured_invalid_request(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "live.json"
+            path.write_text('{"status":"needs_user_input"}')
+            for checksum in ("é" * 64, "A" * 64, "0" * 63, "g" * 64):
+                with self.subTest(checksum=checksum), self.assertRaises(PageviewsError) as caught:
+                    read_resume(path, checksum)
+                self.assertEqual(caught.exception.code, "invalid_request")
+
+    def test_malformed_resume_events_are_structured_invalid_requests(self):
+        malformed_events = (
+            [{}],
+            [{"response": {}}],
+            [{"response": {"message": {"content": None, "tool_calls": {}}}}],
+            [{"response": {"message": {"content": None, "tool_calls": []}}, "result": {}}],
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "live.json"
+            for events in malformed_events:
+                with self.subTest(events=events):
+                    checkpoint = resume_checkpoint()
+                    checkpoint["events"] = events
+                    body = json.dumps(checkpoint).encode()
+                    path.write_bytes(body)
+                    with self.assertRaises(PageviewsError) as caught:
+                        read_resume(path, hashlib.sha256(body).hexdigest())
+                    self.assertEqual(caught.exception.code, "invalid_request")
+
+    def test_resume_rejects_duplicate_fields_and_non_finite_json(self):
+        valid = json.dumps(resume_checkpoint())
+        malformed_documents = (
+            valid.replace('{"phase":', '{"status":"needs_user_input","phase":', 1),
+            valid[:-1] + ',"unexpected":NaN}',
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "live.json"
+            for document in malformed_documents:
+                with self.subTest(document=document):
+                    body = document.encode()
+                    path.write_bytes(body)
+                    with self.assertRaises(PageviewsError) as caught:
+                        read_resume(path, hashlib.sha256(body).hexdigest())
+                    self.assertEqual(caught.exception.code, "invalid_request")
 
 
 @unittest.skipUnless(

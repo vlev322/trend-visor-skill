@@ -11,13 +11,13 @@ from uuid import uuid4
 from tools.pageviews.artifacts import MAX_ARTIFACT_BYTES, save_json_artifact
 from tools.pageviews.cli_common import JsonArgumentParser, print_error, print_result
 from tools.pageviews.errors import PageviewsError
+from tools.pageviews.json_codec import strict_json_loads, strict_json_object
 from tools.pageviews.trend_model import require_statistics
 
 from .client import ModelClient
 from .config import load_config
 from .final_answer import ANSWER_CONTRACT_VERSION, final_messages, response_content, response_format
 from .live_tools import PROFILES, ROOT, LiveSession, tool_schema
-from .runner import _json_object
 
 ADAPTER_GUIDE = """You are running a supervised live test with the entire skill below.
 Use only wikipedia_research, exactly one tool call per response. The host maps it to the actual CLI.
@@ -38,6 +38,63 @@ PDF is outside this run. Do not claim a statistical winner or established produc
 """
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str) and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_resume(resume: object) -> None:
+    if not isinstance(resume, dict):
+        raise PageviewsError("invalid_request", "Live checkpoint must be an object.")
+    events = resume.get("events")
+    operation_results = resume.get("operation_results")
+    model_calls = resume.get("model_calls")
+    if (
+        resume.get("phase") != "discover" or resume.get("status") != "needs_user_input"
+        or not isinstance(resume.get("scope"), dict) or not _is_sha256(resume.get("skill_sha256"))
+        or not isinstance(resume.get("adapter_instructions"), str)
+        or type(model_calls) is not int or model_calls < 1
+        or not isinstance(events, list) or len(events) != model_calls
+        or not isinstance(operation_results, dict)
+    ):
+        raise PageviewsError("invalid_request", "Invalid live checkpoint structure.")
+    result_events = []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or not isinstance(event.get("response"), dict):
+            raise PageviewsError("invalid_request", "Invalid live checkpoint event.")
+        response = event["response"]
+        message = response.get("message")
+        if not isinstance(message, dict):
+            raise PageviewsError("invalid_request", "Invalid live checkpoint message.")
+        content = message.get("content")
+        calls = message.get("tool_calls")
+        if (content is not None and not isinstance(content, str)) or not isinstance(calls, list):
+            raise PageviewsError("invalid_request", "Invalid live checkpoint message.")
+        if "result" not in event:
+            if calls or index != len(events) - 1 or response.get("finish_reason") != "stop":
+                raise PageviewsError("invalid_request", "Invalid live checkpoint event sequence.")
+            continue
+        if (
+            response.get("finish_reason") != "tool_calls" or len(calls) != 1
+            or not isinstance(event.get("arguments"), dict) or not isinstance(event["result"], dict)
+        ):
+            raise PageviewsError("invalid_request", "Invalid live checkpoint tool result.")
+        call = calls[0]
+        function = call.get("function") if isinstance(call, dict) else None
+        if (
+            not isinstance(call, dict) or call.get("type") != "function"
+            or not isinstance(call.get("id"), str) or not 1 <= len(call["id"]) <= 200
+            or not isinstance(function, dict) or function.get("name") != "wikipedia_research"
+            or not isinstance(function.get("arguments"), str)
+        ):
+            raise PageviewsError("invalid_request", "Invalid live checkpoint tool call.")
+        result_events.append(event)
+    if len(result_events) != len(operation_results):
+        raise PageviewsError("invalid_request", "Invalid live checkpoint operation results.")
+
+
 def run_session(
     session: LiveSession, complete: Callable, skill: str, *,
     resume: dict | None = None, user_reply: str | None = None,
@@ -55,6 +112,7 @@ def run_session(
     previous_calls = 0
     previous_events = []
     if resume is not None:
+        _validate_resume(resume)
         if (
             session.phase != "discover" or resume.get("phase") != "discover"
             or resume.get("status") != "needs_user_input" or resume.get("scope") != prompt
@@ -122,7 +180,7 @@ def run_session(
             ):
                 raise PageviewsError("invalid_live_tool", "Only wikipedia_research is available.")
             try:
-                arguments = _json_object(function.get("arguments"))
+                arguments = strict_json_object(function.get("arguments"))
             except ValueError as error:
                 raise PageviewsError("invalid_live_tool", "Tool arguments must be an unambiguous JSON object.") from error
             event["arguments"] = arguments
@@ -144,16 +202,16 @@ def run_session(
 def read_resume(path: Path, checksum: str) -> dict:
     with path.open("rb") as file:
         body = file.read(MAX_ARTIFACT_BYTES + 1)
-    if len(body) > MAX_ARTIFACT_BYTES or not isinstance(checksum, str) or not hmac.compare_digest(
-        hashlib.sha256(body).hexdigest(), checksum,
+    if (
+        len(body) > MAX_ARTIFACT_BYTES or not _is_sha256(checksum)
+        or not hmac.compare_digest(hashlib.sha256(body).hexdigest(), checksum)
     ):
         raise PageviewsError("invalid_request", "Live checkpoint checksum mismatch.")
     try:
-        result = json.loads(body)
+        result = strict_json_loads(body)
     except (ValueError, RecursionError) as error:
         raise PageviewsError("invalid_request", "Invalid live checkpoint JSON.") from error
-    if not isinstance(result, dict):
-        raise PageviewsError("invalid_request", "Live checkpoint must be an object.")
+    _validate_resume(result)
     return result
 
 

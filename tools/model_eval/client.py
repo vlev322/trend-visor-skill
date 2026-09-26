@@ -115,6 +115,8 @@ class ModelClient:
             ) from None
         except self._openai.APIError:
             raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
+        except json.JSONDecodeError:
+            raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
         try:
             return _normalise(completion, self.config.api_key)
         except (AttributeError, TypeError, ValueError, IndexError, RecursionError):

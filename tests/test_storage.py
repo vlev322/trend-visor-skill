@@ -111,13 +111,22 @@ class StorageTests(unittest.TestCase):
         (snapshot.directory.parent / "latest.json").unlink()
         self.assertEqual(read_snapshot(snapshot.directory), snapshot)
 
+    def test_application_version_change_preserves_compatible_snapshot_and_cache(self):
+        snapshot = self.save()
+        metadata = json.loads((snapshot.directory / "metadata.json").read_bytes())
+        self.assertEqual(metadata["processor_version"], "0.0.1")
+
+        with patch("tools.pageviews.storage.__version__", "0.0.2"):
+            self.assertEqual(read_snapshot(snapshot.directory), snapshot)
+            self.assertEqual(load_snapshot(self.root, self.request), snapshot)
+
     def test_invalid_metadata_returns_snapshot_error_after_checksum_verification(self):
         cases = (
             ("request", []),
             ("source", None),
             ("coverage", {}),
             ("schema_version", True),
-            ("processor_version", "unsupported"),
+            ("processor_version", None),
         )
         for field, value in cases:
             with self.subTest(field=field):

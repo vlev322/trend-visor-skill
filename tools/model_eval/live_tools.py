@@ -10,7 +10,7 @@ from tools.pageviews.cli import main as pageviews_main
 from tools.pageviews.errors import PageviewsError
 from tools.pageviews.resolutions import read_resolution
 
-from .final_answer import ANSWER_CONTRACT_VERSION, HOST_BOUND_FIELDS, answer_facts, validate_answer
+from .final_answer import ANSWER_CONTRACT_VERSION, HOST_BOUND_FIELDS, validate_answer
 from .final_narrative import NARRATIVE_VERSION, RENDERED_FIELDS
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -184,9 +184,6 @@ class LiveSession:
             ["--output", str(self.directory / f"{language}-daily.png")]
         )
         return self._invoke(f"{operation}_{language}", arguments)
-
-    def expected_facts(self) -> list[dict]:
-        return answer_facts(self.results)
 
     def research_ready(self) -> bool:
         if self.phase != "research":

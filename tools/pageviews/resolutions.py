@@ -1,7 +1,5 @@
 import hashlib
 import hmac
-import json
-import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +10,7 @@ from . import SCHEMA_VERSION
 from .article_checks import REDIRECT_BADGES, article_title, article_url
 from .artifacts import MAX_ARTIFACT_BYTES, JsonArtifact, save_json_artifact
 from .errors import PageviewsError
+from .json_codec import strict_json_loads
 from .models import normalize_article, normalize_project
 from .topic_data import (
     WikipediaSite, language_code, response_id, response_list,
@@ -171,26 +170,6 @@ def save_resolution(result: dict[str, object], path: Path) -> JsonArtifact:
     return save_json_artifact(result, path)
 
 
-def _unique_object(pairs: list[tuple[str, object]]) -> dict:
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("Duplicate JSON field.")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError("Non-finite JSON constant.")
-
-
-def _finite_float(value: str) -> float:
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError("Non-finite JSON number.")
-    return number
-
-
 def read_resolution(path: Path, confirmation: str) -> ResolutionPlan:
     if not isinstance(confirmation, str) or not re.fullmatch(r"[a-f0-9]{64}", confirmation):
         raise PageviewsError(
@@ -208,10 +187,7 @@ def read_resolution(path: Path, confirmation: str) -> ResolutionPlan:
                 "confirmation_mismatch",
                 "Resolution bytes differ from the confirmed checksum. Review the file again.",
             )
-        result = json.loads(
-            body, object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant, parse_float=_finite_float,
-        )
+        result = strict_json_loads(body)
     except PageviewsError:
         raise
     except (OSError, ValueError, RuntimeError) as error:

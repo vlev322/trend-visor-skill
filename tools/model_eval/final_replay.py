@@ -13,6 +13,7 @@ from tools.pageviews.artifacts import MAX_ARTIFACT_BYTES, json_output_path, save
 from tools.pageviews.cli_common import JsonArgumentParser, print_error, print_result
 from tools.pageviews.diagnostics import run_diagnostics
 from tools.pageviews.errors import PageviewsError
+from tools.pageviews.json_codec import strict_json_loads
 from tools.pageviews.models import normalize_article, parse_date
 from tools.pageviews.storage import read_snapshot
 from tools.pageviews.topic_data import language_code
@@ -24,7 +25,6 @@ from .final_answer import (
     ANSWER_CONTRACT_VERSION, HOST_BOUND_FIELDS, final_messages, response_format, validate_response,
 )
 from .final_narrative import NARRATIVE_VERSION, RENDERED_FIELDS
-from .runner import _finite_float, _reject_constant, _unique_object
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,10 +46,7 @@ def _read_bytes(path: Path) -> bytes:
 
 
 def _object(body: bytes) -> dict:
-    value = json.loads(
-        body, object_pairs_hook=_unique_object,
-        parse_constant=_reject_constant, parse_float=_finite_float,
-    )
+    value = strict_json_loads(body)
     if not isinstance(value, dict):
         raise ValueError("Expected an artifact object.")
     return value

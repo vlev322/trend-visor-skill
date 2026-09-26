@@ -2,10 +2,11 @@ import json
 from copy import deepcopy
 
 from tools.pageviews.errors import PageviewsError
+from tools.pageviews.json_codec import strict_json_object
 from tools.pageviews.resolutions import TARGET_STATUSES
 
 from .final_narrative import DIRECTIONS, NEXT_CHECKS, interpretations, render_narrative
-from .runner import _json_object, _matches
+from .runner import _matches
 
 ANSWER_CONTRACT_VERSION = 4
 HOST_BOUND_FIELDS = ("source_url", "chart_path")
@@ -139,7 +140,7 @@ def final_messages(scope: dict, results: dict, skill: str) -> list[dict]:
 
 def validate_answer(content: str, results: dict) -> dict:
     try:
-        answer = _json_object(content)
+        answer = strict_json_object(content)
     except ValueError as error:
         raise PageviewsError("live_invalid_answer", "The final response must be a plain JSON object; no repair was applied.") from error
     if set(answer) != ANSWER_FIELDS:
