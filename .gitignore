@@ -1,8 +1,11 @@
 .venv/
+.env
+.env.*
 __pycache__/
 *.py[cod]
 assets/pageviews/
 assets/charts/
 assets/resolutions/
 assets/studies/
+assets/evaluations/
 .DS_Store

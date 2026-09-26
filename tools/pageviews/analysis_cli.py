@@ -6,6 +6,8 @@ from .analysis import Period, analyze_series
 from .cli_common import JsonArgumentParser, print_error, print_result
 from .diagnostics import DEFAULT_TOP_DAYS, DEFAULT_TRIM_DAYS, run_diagnostics
 from .errors import PageviewsError
+from .methodology import assess_methodology, prepare_methodology
+from .methodology_cli import add_methodology_arguments, methodology_options
 from .models import parse_date
 from .storage import read_snapshot
 from .validation import validate_response
@@ -49,6 +51,7 @@ def _parser() -> JsonArgumentParser:
         "--missing-daily-upper-bound", type=int,
         help="Assume missing counts lie between 0 and this value; no default cap",
     )
+    add_methodology_arguments(parser)
     return parser
 
 
@@ -56,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         parser = _parser()
         args = parser.parse_args(argv)
+        methodology = methodology_options(args)
         supplied_scenarios = (
             args.top_days, args.trim_days, args.missing_daily_upper_bound
         )
@@ -71,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parse_date(args.current_start, "current-start"),
             parse_date(args.current_end, "current-end"),
         )
+        prepare_methodology(methodology, baseline, current)
         snapshot = read_snapshot(args.snapshot)
         series = validate_response(snapshot.response.body, snapshot.request)
         analysis = analyze_series(
@@ -86,6 +91,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.trim_days if args.trim_days is not None else DEFAULT_TRIM_DAYS
                 ),
                 missing_daily_upper_bound=args.missing_daily_upper_bound,
+            )
+        if methodology is not None:
+            analysis["methodology"] = assess_methodology(
+                series, baseline, current, options=methodology,
             )
         result = {
             "schema_version": SCHEMA_VERSION,

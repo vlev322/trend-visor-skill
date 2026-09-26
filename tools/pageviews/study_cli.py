@@ -6,6 +6,7 @@ from .analysis import Period
 from .artifacts import json_output_path, save_json_artifact
 from .cli_common import JsonArgumentParser, print_error, print_result
 from .errors import PageviewsError
+from .methodology_cli import add_methodology_arguments, methodology_options
 from .models import parse_date
 from .resolutions import read_resolution
 from .studies import run_study
@@ -34,12 +35,14 @@ def _parser() -> JsonArgumentParser:
     parser.add_argument("--refresh", action="store_true", help="Fetch new snapshots; preserve old snapshots")
     parser.add_argument("--monthly", action="store_true", help="Include calendar-month summaries")
     parser.add_argument("--output", type=Path, help="New study JSON; default: unique assets/studies file")
+    add_methodology_arguments(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
+        methodology = methodology_options(args)
         output = json_output_path(args.output or ASSETS / "studies" / f"study-{uuid4().hex}.json")
         plan = read_resolution(args.resolution, args.confirm_sha256)
         baseline = Period(
@@ -54,6 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan, baseline, current, as_of=args.as_of, lag_days=args.lag_days,
             cache_dir=args.cache_dir, user_agent=args.user_agent, timeout=args.timeout,
             offline=args.offline, refresh=args.refresh, include_monthly=args.monthly,
+            methodology=methodology,
         )
         saved = save_json_artifact(result, output)
         result["artifacts"] = {"study": str(saved.path), "study_sha256": saved.sha256}

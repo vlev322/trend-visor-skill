@@ -6,6 +6,7 @@ from . import SCHEMA_VERSION
 from .analysis import Period, analyze_series, validate_period_order
 from .client import fetch_response, validate_user_agent
 from .errors import PageviewsError
+from .methodology import MethodologyOptions, assess_methodology, prepare_methodology
 from .models import EARLIEST_DATE, PageviewsRequest, build_request, parse_date
 from .resolutions import ResolutionPlan
 from .storage import Snapshot, load_snapshot, save_snapshot
@@ -126,8 +127,10 @@ def run_study(
     offline: bool = False,
     refresh: bool = False,
     include_monthly: bool = False,
+    methodology: MethodologyOptions | None = None,
 ) -> dict[str, object]:
     _validate_window(baseline, current, as_of, lag_days)
+    prepare_methodology(methodology, baseline, current)
     if offline and refresh:
         raise PageviewsError("invalid_request", "offline and refresh cannot be combined.")
     if not math.isfinite(timeout) or timeout <= 0:
@@ -162,6 +165,10 @@ def run_study(
                 offline=offline, refresh=refresh, blocked_by=blocked_by,
             )
             analysis = analyze_series(series, baseline, current, include_monthly=include_monthly)
+            if methodology is not None:
+                analysis["methodology"] = assess_methodology(
+                    series, baseline, current, options=methodology,
+                )
         except PageviewsError as error:
             row.update(status="collection_failed", reason=error.code, error=error.as_dict())
             if (
@@ -180,7 +187,7 @@ def run_study(
     status = "complete" if summary["languages_with_complete_periods"] == len(results) else (
         "partial" if summary["analyzed_languages"] else "unavailable"
     )
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION, "study_version": STUDY_VERSION,
         "operation": "study", "status": status,
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -209,3 +216,17 @@ def run_study(
             "Observed differences do not establish statistical significance, persistence or product demand.",
         ],
     }
+    if methodology is not None:
+        modeled = [
+            row["analysis"]["methodology"]["trend_model"]
+            for row in results if row["status"] == "analyzed"
+        ]
+        result["methodology"] = {
+            "methodology_version": 1, "parameters": methodology.as_dict(),
+            "models_fitted": sum(model["status"] == "computed" for model in modeled),
+            "models_with_intervals": sum(model.get("statistical_inference_performed", False) for model in modeled),
+            "inference_scope": "individual_articles_not_between_language_differences",
+            "parent_method_scope": "descriptive_period_summaries_and_mean_comparison",
+            "comparison_table_unchanged": True,
+        }
+    return result

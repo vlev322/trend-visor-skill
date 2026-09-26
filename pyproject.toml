@@ -7,3 +7,8 @@ dependencies = []
 
 [project.optional-dependencies]
 charts = ["matplotlib==3.11.2"]
+statistics = ["numpy>=1.23.5,<3", "statsmodels==0.15.0"]
+evaluation = [
+    "openai==3.19.2",
+    "python-dotenv==1.2.3",
+]
