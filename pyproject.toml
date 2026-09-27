@@ -1,5 +1,5 @@
 [project]
-name = "trend-visor"
+name = "wikipedia-pageviews-trends"
 version = "0.1.0"
 description = "Collect, describe and plot daily Wikipedia pageviews."
 requires-python = ">=3.11"

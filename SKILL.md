@@ -1,5 +1,5 @@
 ---
-name: trend-visor
+name: wikipedia-pageviews-trends
 description: Compare interest in a topic across Wikipedia language editions using Wikimedia daily pageviews. Finds the matching article per language, collects and caches daily views, compares two explicit periods with calendar and spike sensitivity checks, plots a PNG chart, and writes a Markdown report. Use when a B2C team asks which topic or language audience to explore next, or whether interest in an existing topic is growing.
 compatibility: Requires Python 3.11+. Core search/resolve/study run with the standard library; PNG charts need `uv sync --locked --extra charts`. Wikimedia lookup and collection need network access; analysis, diagnostics and reporting on saved data are offline.
 metadata:
