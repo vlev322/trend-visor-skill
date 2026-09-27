@@ -1,4 +1,4 @@
-# trend-visor
+# Wikipedia-pageviews-trends
 
 An [Agent Skill](https://agentskills.io/specification) that compares interest
 in a topic across Wikipedia language editions using Wikimedia's public daily
