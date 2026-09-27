@@ -11,8 +11,10 @@ from .chart_cli import main as chart_main
 from .cli_common import JsonArgumentParser, print_error, print_result
 from .client import fetch_response, validate_user_agent
 from .errors import PageviewsError
+from .discovery_cli import main as discovery_main
 from .models import build_request
 from .report_cli import main as report_main
+from .research_cli import main as research_main
 from .storage import load_snapshot, save_snapshot
 from .study_cli import main as study_main
 from .topic_cli import main as topic_main
@@ -35,7 +37,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         description="Download and validate daily pageviews for one confirmed article.",
         epilog="Other operations: python3 -m tools.pageviews "
-        "{search,resolve,study,analyze,chart,report} --help",
+        "{search,resolve,study,analyze,chart,report,research,discovery} --help",
     )
     parser.add_argument("--project", required=True, help="e.g. cs.wikipedia.org")
     parser.add_argument(
@@ -89,6 +91,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return study_main(arguments[1:])
     if arguments and arguments[0] == "report":
         return report_main(arguments[1:])
+    if arguments and arguments[0] == "research":
+        return research_main(arguments[1:])
+    if arguments and arguments[0] == "discovery":
+        return discovery_main(arguments[1:])
     if arguments and arguments[0] in {"search", "resolve"}:
         return topic_main(arguments[0], arguments[1:])
     try:

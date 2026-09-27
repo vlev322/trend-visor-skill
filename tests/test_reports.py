@@ -15,6 +15,15 @@ from tools.pageviews.reports import MAX_EVIDENCE_BYTES, build_report, evidence_p
 
 
 class ReportTests(unittest.TestCase):
+    def test_single_language_report_does_not_ask_for_cross_language_priorities(self):
+        with TemporaryDirectory() as directory:
+            saved, _ = saved_study(Path(directory), {"cs": (10, 20, 30, 60)}, unmatched=())
+            report = build_report(saved.path, saved.sha256, question="Чи змінилися перегляди?")
+            self.assertEqual(report["prioritization"]["status"], "not_applicable_single_language")
+            self.assertIn("лише одну мовну версію", report["prioritization"]["message_uk"])
+            self.assertIn("міжмовна пріоритизація не застосовується", report["markdown"])
+            self.assertNotIn("Пріоритет мов не визначено", report["markdown"])
+
     @patch("tools.pageviews.client.urlopen", side_effect=AssertionError("No network"))
     def test_report_uses_verified_study_and_keeps_all_language_outcomes(self, network):
         with TemporaryDirectory() as directory:
@@ -33,6 +42,12 @@ class ReportTests(unittest.TestCase):
             self.assertIn("en", report["markdown"])
             self.assertIn("no_sitelink", report["markdown"])
             self.assertEqual(report["prioritization"]["status"], "needs_criteria")
+            self.assertEqual(report["report_version"], 4)
+            self.assertTrue(any("Єдиного показника довіри" in item and "статистичною впевненістю" in item
+                                for item in report["limitations_uk"]))
+            for dimension in ("цілісність", "покриття", "чутливість", "календарна узгодженість", "статистичний висновок"):
+                self.assertIn(dimension, report["markdown"])
+            self.assertIn("не зводяться до загального бала довіри", report["markdown"])
             page = evidence_page(report)
             self.assertEqual(page["total_rows"], 3)
             self.assertEqual(page["next_offset"], 1)
@@ -171,7 +186,7 @@ class ReportTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             saved, _ = saved_study(Path(directory))
             report = build_report(saved.path, saved.sha256, question="𐐀" * 1000, criteria=["𐐀" * 200] * 5)
-            with self.assertRaises(PageviewsError) as caught:
+            with patch("tools.pageviews.reports.MAX_EVIDENCE_BYTES", 12000), self.assertRaises(PageviewsError) as caught:
                 evidence_page(report, limit=3)
             self.assertEqual(caught.exception.code, "evidence_too_large")
             self.assertEqual(len(report["evidence"]), 3)
@@ -197,4 +212,5 @@ class ReportTests(unittest.TestCase):
                 report = build_report(saved.path, saved.sha256, question="Які висновки доступні?")
             self.assertEqual(report["evidence"][0]["recorded_model"], "not_revalidated_not_reported")
             self.assertIn("не переоцінює", report["markdown"])
+            self.assertIn("збережена модель не переоцінена й не наведена", report["markdown"])
             self.assertNotIn("confidence_interval", json.dumps(evidence_page(report)))

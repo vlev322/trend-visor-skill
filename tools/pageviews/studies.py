@@ -11,8 +11,10 @@ from .models import EARLIEST_DATE, PageviewsRequest, build_request, parse_date
 from .resolutions import ResolutionPlan
 from .storage import Snapshot, load_snapshot, save_snapshot
 from .validation import ValidatedSeries, validate_response
+from tools.request_metrics import record_cache_event
 
 STUDY_VERSION = 1
+DERIVED_STUDY_VERSION = 2
 
 
 def _validate_window(baseline: Period, current: Period, as_of: str, lag_days: int) -> None:
@@ -40,7 +42,16 @@ def _collect_snapshot(
     refresh: bool,
     blocked_by: dict | None,
 ) -> tuple[Snapshot, ValidatedSeries, bool]:
-    snapshot = None if refresh else load_snapshot(cache_dir, request)
+    if refresh:
+        snapshot = None
+        record_cache_event("bypasses")
+    else:
+        try:
+            snapshot = load_snapshot(cache_dir, request)
+        except PageviewsError:
+            record_cache_event("errors")
+            raise
+        record_cache_event("hits" if snapshot is not None else "misses")
     cache_hit = snapshot is not None
     if snapshot is None:
         if offline:

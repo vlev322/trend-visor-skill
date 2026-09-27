@@ -15,6 +15,7 @@ from tools.model_eval.cli import main
 from tools.model_eval.client import ModelClient, validate_options
 from tools.model_eval.config import ModelConfig
 from tools.pageviews.errors import PageviewsError
+from tools.request_metrics import capture_request_metrics
 
 
 def completion_payload(content=None, calls=None, model="qwen3-coder-next"):
@@ -90,13 +91,18 @@ class ModelClientTests(unittest.TestCase):
                     requests.append(request)
                     return self.http.Response(status, json={"error": {"message": "fixture-api-key"}})
 
-                with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
-                    with self.assertRaises(PageviewsError) as caught:
-                        client.complete([{"role": "user", "content": "Fixture"}], None)
+                with capture_request_metrics() as metrics:
+                    with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
+                        with self.assertRaises(PageviewsError) as caught:
+                            client.complete([{"role": "user", "content": "Fixture"}], None)
                 self.assertEqual(caught.exception.code, "model_http_error")
                 self.assertEqual(caught.exception.details["http_status"], status)
                 self.assertNotIn("fixture-api-key", json.dumps(caught.exception.as_dict()))
                 self.assertEqual(len(requests), 1)
+                measured = metrics.snapshot()["http"]["model"]
+                self.assertEqual(measured["attempts"], 1)
+                self.assertEqual(measured["errors"], 1)
+                self.assertEqual(measured["status_codes"], {str(status): 1})
 
     def test_malformed_success_response_is_a_structured_error_without_retry(self):
         requests = []
@@ -105,9 +111,10 @@ class ModelClientTests(unittest.TestCase):
             requests.append(request)
             return self.http.Response(200, content=b"{malformed", headers={"content-type": "application/json"})
 
-        with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
-            with self.assertRaises(PageviewsError) as caught:
-                client.complete([{"role": "user", "content": "Fixture"}], None)
+        with capture_request_metrics() as metrics:
+            with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
+                with self.assertRaises(PageviewsError) as caught:
+                    client.complete([{"role": "user", "content": "Fixture"}], None)
         self.assertEqual(caught.exception.code, "model_response_error")
         self.assertNotIn("malformed", str(caught.exception))
         self.assertEqual(len(requests), 1)
@@ -177,12 +184,17 @@ class ModelClientTests(unittest.TestCase):
             requests.append(request)
             raise self.http.ReadTimeout("fixture-api-key", request=request)
 
-        with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
-            with self.assertRaises(PageviewsError) as caught:
-                client.complete([{"role": "user", "content": "Fixture"}], None)
+        with capture_request_metrics() as metrics:
+            with ModelClient(self.config, transport=self.http.MockTransport(handle)) as client:
+                with self.assertRaises(PageviewsError) as caught:
+                    client.complete([{"role": "user", "content": "Fixture"}], None)
         self.assertEqual(caught.exception.code, "model_connection_error")
         self.assertNotIn("fixture-api-key", str(caught.exception))
         self.assertEqual(len(requests), 1)
+        measured = metrics.snapshot()["http"]["model"]
+        self.assertEqual(measured["attempts"], 1)
+        self.assertEqual(measured["errors"], 1)
+        self.assertEqual(measured["status_codes"], {})
 
     def test_unusable_or_sensitive_model_responses_are_not_recorded(self):
         for payload in (

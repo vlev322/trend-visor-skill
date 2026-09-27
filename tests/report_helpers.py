@@ -1,9 +1,14 @@
+import io
+import json
+from contextlib import redirect_stdout
 from datetime import date, timedelta
 
 from tests.helpers import encode_items, make_item, make_request
 from tests.study_helpers import TITLES, resolution_result
 from tools.pageviews.analysis import Period
+from tools.pageviews.analysis_cli import main as analyze_main
 from tools.pageviews.artifacts import save_json_artifact
+from tools.pageviews.chart_cli import main as chart_main
 from tools.pageviews.models import RawResponse
 from tools.pageviews.resolutions import read_resolution, save_resolution
 from tools.pageviews.storage import save_snapshot
@@ -38,3 +43,37 @@ def saved_study(root, values=None, *, unmatched=("en",), start=date(2026, 7, 1),
     )
     artifact = save_json_artifact(study, root / "study.json")
     return artifact, study
+
+
+def saved_analysis(root, study, *, row_index=0, top_days=1, trim_days=1, upper_bound=None):
+    row = study["results"][row_index]
+    arguments = ["--snapshot", row["snapshot"], "--diagnostics", "--top-days", str(top_days),
+                 "--trim-days", str(trim_days)]
+    for name, period in study["periods"].items():
+        arguments.extend([f"--{name}-start", period["start"], f"--{name}-end", period["end"]])
+    if upper_bound is not None:
+        arguments.extend(["--missing-daily-upper-bound", str(upper_bound)])
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = analyze_main(arguments)
+    if code != 0:
+        raise AssertionError(output.getvalue())
+    result = json.loads(output.getvalue())
+    return save_json_artifact(result, root / f"analysis-{row['language']}.json"), result
+
+
+def saved_chart(root, study, *, row_index=0):
+    row = study["results"][row_index]
+    arguments = ["--snapshot", row["snapshot"], "--output", str(root / f"chart-{row['language']}.png")]
+    for name, period in study["periods"].items():
+        arguments.extend([f"--{name}-start", period["start"], f"--{name}-end", period["end"]])
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = chart_main(arguments)
+    if code != 0:
+        raise AssertionError(output.getvalue())
+    result = json.loads(output.getvalue())
+    artifact = save_json_artifact(result, root / f"chart-{row['language']}.json")
+    return artifact, result
+
+

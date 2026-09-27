@@ -5,6 +5,7 @@ from urllib.request import Request, urlopen
 
 from .errors import PageviewsError
 from .models import PageviewsRequest, RawResponse
+from tools.request_metrics import track_http_attempt
 
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
@@ -37,7 +38,8 @@ def fetch_response(
 
 
 def fetch_url(
-    url: str, *, user_agent: str, timeout: float = 30.0
+    url: str, *, user_agent: str, timeout: float = 30.0,
+    metric_category: str = "pageviews",
 ) -> RawResponse:
     if not math.isfinite(timeout) or timeout <= 0:
         raise PageviewsError("invalid_request", "timeout must be positive and finite.")
@@ -48,40 +50,44 @@ def fetch_url(
             "Accept": "application/json",
         },
     )
-    try:
-        with urlopen(http_request, timeout=timeout) as response:
-            if response.status != 200:
+    with track_http_attempt(metric_category) as attempt:
+        try:
+            with urlopen(http_request, timeout=timeout) as response:
+                attempt.status_code = response.status
+                if response.status != 200:
+                    raise PageviewsError(
+                        "http_error",
+                        "Expected HTTP 200 from Wikimedia.",
+                        details={"http_status": response.status, "url": url},
+                    )
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+                attempt.response_body_bytes_read = len(body)
+        except HTTPError as error:
+            attempt.status_code = error.code
+            details = {"http_status": error.code, "url": url}
+            retry_after = error.headers.get("Retry-After") if error.headers else None
+            if retry_after is not None:
+                details["retry_after"] = retry_after
+            error.close()
+            if error.code == 429:
                 raise PageviewsError(
-                    "http_error",
-                    "Expected HTTP 200 from Wikimedia.",
-                    details={"http_status": response.status, "url": url},
-                )
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-    except HTTPError as error:
-        details = {"http_status": error.code, "url": url}
-        retry_after = error.headers.get("Retry-After") if error.headers else None
-        if retry_after is not None:
-            details["retry_after"] = retry_after
-        error.close()
-        if error.code == 429:
+                    "rate_limited",
+                    "Wikimedia is limiting requests. Respect Retry-After before retrying.",
+                    details=details,
+                ) from error
             raise PageviewsError(
-                "rate_limited",
-                "Wikimedia is limiting requests. Respect Retry-After before retrying.",
-                details=details,
+                "http_error", "Wikimedia returned an HTTP error.", details=details
             ) from error
-        raise PageviewsError(
-            "http_error", "Wikimedia returned an HTTP error.", details=details
-        ) from error
-    except (URLError, TimeoutError, OSError) as error:
-        raise PageviewsError(
-            "network_error",
-            "Could not complete the Wikimedia request; no automatic retry was made.",
-            details={"url": url, "exception_type": type(error).__name__},
-        ) from error
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise PageviewsError(
-            "response_too_large", "Response exceeds 10 MiB; request a smaller window."
-        )
+        except (URLError, TimeoutError, OSError) as error:
+            raise PageviewsError(
+                "network_error",
+                "Could not complete the Wikimedia request; no automatic retry was made.",
+                details={"url": url, "exception_type": type(error).__name__},
+            ) from error
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise PageviewsError(
+                "response_too_large", "Response exceeds 10 MiB; request a smaller window."
+            )
     return RawResponse(
         url=url,
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),

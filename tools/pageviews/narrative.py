@@ -60,3 +60,38 @@ def period_text(row: dict, detailed: dict) -> str:
     if scenarios:
         sentences.append("Окремі описові перевірки чутливості: " + "; ".join(scenarios) + ".")
     return " ".join(sentences)
+
+
+def diagnostic_text(diagnostics: dict) -> str:
+    parameters = diagnostics["parameters"]
+    sentences = [f"Параметри сценаріїв: найбільших днів на період — {parameters['top_days']}; "
+                 f"обрізання кожного краю — {parameters['trim_days']} днів."]
+    missing = diagnostics["missing_values"]
+    requirement = missing["break_even"]
+    if requirement["status"] == "computed":
+        sentences.append(
+            f"Щоб повне середнє поточного періоду досягло базового, на пропущені дні потрібно щонайменше "
+            f"{requirement['required_missing_views_total']} переглядів сумарно. Це вимога, не оцінка фактичних пропусків."
+        )
+    bounds = missing["conditional_bounds"]
+    if bounds["status"] == "computed":
+        sentences.append(
+            f"За припущення, що кожен пропущений день має від 0 до {bounds['assumed_daily_upper_bound']} переглядів, "
+            f"межі зміни — від {format_number(bounds['lower_change_percent'], signed=True)}% "
+            f"до {format_number(bounds['upper_change_percent'], signed=True)}%; це межі припущення, не довірчий інтервал."
+        )
+    elif missing["missing_days"]["baseline"] + missing["missing_days"]["current"]:
+        sentences.append(f"Межі за припущенням про пропуски не обчислено ({bounds['reason']}); "
+                         f"задана верхня межа: {bounds['assumed_daily_upper_bound'] if bounds['assumed_daily_upper_bound'] is not None else 'не задана'}.")
+    largest = diagnostics["largest_days"]["comparison_after_exclusion"]
+    if largest["status"] != "computed":
+        sentences.append(f"Порівняння без найбільших днів недоступне ({largest['reason']}).")
+    edges = diagnostics["window_edges"]
+    if edges["status"] != "computed":
+        sentences.append(f"Обрізання країв не виконано ({edges['reason']}).")
+    elif edges["scenario"]["comparison"]["status"] != "computed":
+        sentences.append(f"Після обрізання країв відносна зміна недоступна ({edges['scenario']['comparison']['reason']}).")
+    else:
+        b, c = edges["scenario"]["baseline"]["window"], edges["scenario"]["current"]["window"]
+        sentences.append(f"Вікна після обрізання: {b['start']}–{b['end']} та {c['start']}–{c['end']}.")
+    return " ".join(sentences)

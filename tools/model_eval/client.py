@@ -3,6 +3,7 @@ import logging
 import math
 
 from tools.pageviews.errors import PageviewsError
+from tools.request_metrics import track_http_attempt
 
 from .config import ModelConfig
 
@@ -99,24 +100,26 @@ class ModelClient:
         options = {"tools": [tool], "tool_choice": "auto"} if tool is not None else {}
         if response_format is not None:
             options["response_format"] = response_format
-        try:
-            completion = self._sdk.chat.completions.create(
-                model=self.config.model, messages=messages,
-                temperature=0, max_tokens=self.max_tokens, **options,
-            )
-        except self._openai.APIStatusError as error:
-            raise PageviewsError(
-                "model_http_error", "The model endpoint rejected the request; no retry was made.",
-                details={"http_status": error.status_code},
-            ) from None
-        except self._openai.APIConnectionError:
-            raise PageviewsError(
-                "model_connection_error", "Model connection or timeout failure; no retry was made."
-            ) from None
-        except self._openai.APIError:
-            raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
-        except json.JSONDecodeError:
-            raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
+        with track_http_attempt("model") as attempt:
+            try:
+                completion = self._sdk.chat.completions.create(
+                    model=self.config.model, messages=messages,
+                    temperature=0, max_tokens=self.max_tokens, **options,
+                )
+            except self._openai.APIStatusError as error:
+                attempt.status_code = error.status_code
+                raise PageviewsError(
+                    "model_http_error", "The model endpoint rejected the request; no retry was made.",
+                    details={"http_status": error.status_code},
+                ) from None
+            except self._openai.APIConnectionError:
+                raise PageviewsError(
+                    "model_connection_error", "Model connection or timeout failure; no retry was made."
+                ) from None
+            except self._openai.APIError:
+                raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
+            except json.JSONDecodeError:
+                raise PageviewsError("model_response_error", "The SDK could not read the model response.") from None
         try:
             return _normalise(completion, self.config.api_key)
         except (AttributeError, TypeError, ValueError, IndexError, RecursionError):

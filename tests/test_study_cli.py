@@ -13,8 +13,11 @@ from urllib.error import HTTPError, URLError
 
 from tests.helpers import make_request
 from tests.study_helpers import TITLES, pageviews_http_response, resolution_result
+from tools.pageviews.artifacts import save_json_artifact
 from tools.pageviews.cli import main
+from tools.pageviews.errors import PageviewsError
 from tools.pageviews.models import RawResponse
+from tools.pageviews.reports import build_report
 from tools.pageviews.resolutions import save_resolution
 from tools.pageviews.storage import save_snapshot
 from tools.pageviews.validation import validate_response
@@ -206,6 +209,78 @@ class StudyCliTests(unittest.TestCase):
         opener.assert_called_once()
 
     @patch("tools.pageviews.client.urlopen")
+    def test_reframes_pinned_study_offline_and_report_verifies_broader_snapshot(self, opener):
+        self.select_languages(("cs",))
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        code, original = self.invoke(
+            "--user-agent", "study-tests/1", "--output", str(self.root / "original.json"),
+        )
+        self.assertEqual(code, 0, original)
+        original_path = Path(original["artifacts"]["study"])
+        original_bytes = original_path.read_bytes()
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--from-study", str(original_path), original["artifacts"]["study_sha256"],
+                "--follow-up-confirmation", "Так, підтверджую ці нові періоди.",
+                "--baseline-start", "2026-07-02", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-03",
+                "--output", str(self.root / "derived.json"),
+            ])
+        derived = json.loads(output.getvalue())
+        self.assertEqual(code, 0, derived)
+        self.assertEqual(derived["mode"], "pinned_snapshot_reuse")
+        self.assertEqual(derived["periods"]["baseline"], {"start": "2026-07-02", "end": "2026-07-02"})
+        row = derived["results"][0]
+        self.assertEqual(row["request"], original["results"][0]["request"])
+        self.assertEqual(row["snapshot"], original["results"][0]["snapshot"])
+        self.assertEqual(row["analysis"]["comparison"]["change_percent"], 50.0)
+        self.assertEqual(derived["source_study"]["sha256"], original["artifacts"]["study_sha256"])
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        self.assertEqual(opener.call_count, 1)
+
+        report = build_report(
+            Path(derived["artifacts"]["study"]), derived["artifacts"]["study_sha256"],
+            question="Чи змінилися перегляди у вибраних підперіодах?",
+        )
+        self.assertEqual(report["periods"]["baseline"], {"start": "2026-07-02", "end": "2026-07-02"})
+        self.assertEqual(report["evidence"][0]["analysis"]["comparison"]["change_percent"], 50.0)
+        self.assertEqual(report["verification"]["network_requests"], 0)
+
+        forged = json.loads(Path(derived["artifacts"]["study"]).read_text())
+        forged["source_study"]["sha256"] = "0" * 64
+        forged_ref = save_json_artifact(forged, self.root / "forged-derived.json")
+        with self.assertRaises(PageviewsError) as caught:
+            build_report(forged_ref.path, forged_ref.sha256, question="tampered parent reference")
+        self.assertEqual(caught.exception.code, "report_source_error")
+        self.assertEqual(opener.call_count, 1)
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_reframe_rejects_periods_outside_the_pinned_snapshot(self, opener):
+        self.select_languages(("cs",))
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        code, original = self.invoke(
+            "--user-agent", "study-tests/1", "--output", str(self.root / "original.json"),
+        )
+        self.assertEqual(code, 0, original)
+        output_path = self.root / "invalid-derived.json"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--from-study", original["artifacts"]["study"], original["artifacts"]["study_sha256"],
+                "--follow-up-confirmation", "Так.",
+                "--baseline-start", "2026-06-30", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-03",
+                "--output", str(output_path),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_request")
+        self.assertFalse(output_path.exists())
+        self.assertEqual(opener.call_count, 1)
+
+    @patch("tools.pageviews.client.urlopen")
     def test_refresh_keeps_old_snapshot_and_records_new_observation(self, opener):
         opener.side_effect = [
             pageviews_http_response("cs", (10, 20, 30, 60)),
@@ -227,6 +302,22 @@ class StudyCliTests(unittest.TestCase):
         self.assertNotEqual(row["snapshot"], first["results"][0]["snapshot"])
         self.assertEqual(row["analysis"]["comparison"]["change_percent"], 300.0)
         self.assertEqual(old.read_bytes(), before)
+        self.assertEqual(opener.call_count, 2)
+
+        code, latest = self.invoke(
+            "--offline", "--output", str(self.root / "latest.json"),
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(latest["results"][0]["cache_hit"])
+        self.assertEqual(latest["results"][0]["snapshot"], row["snapshot"])
+        self.assertEqual(latest["results"][0]["analysis"]["comparison"]["change_percent"], 300.0)
+
+        old_study_path = self.root / "first.json"
+        old_study_sha256 = hashlib.sha256(old_study_path.read_bytes()).hexdigest()
+        historical = build_report(old_study_path, old_study_sha256, question="Replay pinned historical snapshot")
+        self.assertEqual(historical["evidence"][0]["analysis"]["comparison"]["change_percent"], 200.0)
+        self.assertEqual(historical["evidence"][0]["source"]["response_sha256"],
+                         first["results"][0]["source"]["response_sha256"])
         self.assertEqual(opener.call_count, 2)
 
     @patch("tools.pageviews.client.urlopen")

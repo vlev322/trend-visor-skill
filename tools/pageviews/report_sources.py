@@ -14,7 +14,7 @@ from .methodology import METHODOLOGY_VERSION, MethodologyOptions
 from .models import build_request, parse_date
 from .resolutions import read_resolution
 from .storage import read_snapshot
-from .studies import STUDY_VERSION
+from .studies import DERIVED_STUDY_VERSION, STUDY_VERSION
 from .validation import validate_response
 
 
@@ -67,10 +67,38 @@ def load_report_source(path: Path, checksum: str) -> dict:
         study = strict_json_loads(body)
         if (
             type(study["schema_version"]) is not int or study["schema_version"] != SCHEMA_VERSION
-            or type(study["study_version"]) is not int or study["study_version"] != STUDY_VERSION
+            or type(study["study_version"]) is not int
+            or study["study_version"] not in (STUDY_VERSION, DERIVED_STUDY_VERSION)
             or study["operation"] != "study"
         ):
             raise ValueError("Unsupported study format.")
+        derived = study["study_version"] == DERIVED_STUDY_VERSION
+        parent_source = None
+        source_study = None
+        if derived:
+            source_study = study.get("source_study")
+            if (not isinstance(source_study, dict)
+                    or set(source_study) != {"path", "sha256", "user_reply"}
+                    or not isinstance(source_study["path"], str)
+                    or not Path(source_study["path"]).is_absolute()
+                    or not isinstance(source_study["sha256"], str)
+                    or re.fullmatch(r"[a-f0-9]{64}", source_study["sha256"]) is None
+                    or not isinstance(source_study["user_reply"], str)
+                    or not source_study["user_reply"].strip()
+                    or len(source_study["user_reply"]) > 2000
+                    or any(ord(char) < 32 for char in source_study["user_reply"])):
+                raise ValueError("Invalid derived-study source or human confirmation record.")
+            parent_path = Path(source_study["path"]).resolve()
+            with parent_path.open("rb") as file:
+                parent_body = file.read(MAX_ARTIFACT_BYTES + 1)
+            if (len(parent_body) > MAX_ARTIFACT_BYTES
+                    or not hmac.compare_digest(hashlib.sha256(parent_body).hexdigest(), source_study["sha256"])):
+                raise ValueError("Parent study checksum mismatch.")
+            parent_document = strict_json_loads(parent_body)
+            if (parent_document.get("study_version") != STUDY_VERSION
+                    or "source_study" in parent_document):
+                raise ValueError("Derived studies must point directly to an original study, not another derived study.")
+            parent_source = load_report_source(parent_path, source_study["sha256"])
         periods = study["periods"]
         baseline, current = (
             Period(parse_date(periods[name]["start"], "start"), parse_date(periods[name]["end"], "end"))
@@ -89,6 +117,21 @@ def load_report_source(path: Path, checksum: str) -> dict:
             or not isinstance(study["results"], list) or len(study["results"]) != len(plan.targets)
         ):
             raise ValueError("Study scope differs from the confirmed resolution.")
+        if derived:
+            if (parent_source["resolution"] != {
+                    "path": str(plan.path), "sha256": plan.sha256,
+                    "entity_id": plan.entity["entity_id"],
+                }
+                    or parent_source["as_of"] != as_of.isoformat()
+                    or parent_source["excluded_recent_days"] != lag
+                    or baseline.start < parse_date(parent_source["periods"]["baseline"]["start"], "start")
+                    or current.end > parse_date(parent_source["periods"]["current"]["end"], "end")):
+                raise ValueError("Derived scope must preserve the parent resolution and safety settings and remain inside its period window.")
+            parent_rows = {row["language"]: row for row in parent_source["rows"]}
+            parent_snapshots = {item["language"]: item for item in parent_source["snapshots"]}
+        else:
+            parent_rows = {}
+            parent_snapshots = {}
         rows, inputs = [], []
         for row, target in zip(study["results"], plan.targets, strict=True):
             identity = {"language": target.language, "project": target.project, "article": target.article,
@@ -101,11 +144,28 @@ def load_report_source(path: Path, checksum: str) -> dict:
                 if row["status"] != "not_collected" or row["reason"] != target.status or "analysis" in row:
                     raise ValueError("An unresolved article cannot have an analysis.")
                 continue
-            request = build_request(project=target.project, article=target.article,
-                                    start=baseline.start.isoformat(), end=current.end.isoformat(),
-                                    as_of=as_of.isoformat(), lag_days=lag)
-            if not _same(row["request"], request.as_dict()):
-                raise ValueError("Recorded request differs from study periods or scope.")
+            if derived:
+                parent_row = parent_rows.get(target.language)
+                parent_snapshot = parent_snapshots.get(target.language)
+                if (parent_row is None or parent_row["status"] != "analyzed"
+                        or parent_row["project"] != target.project or parent_row["article"] != target.article
+                        or parent_snapshot is None or row["snapshot"] != parent_snapshot["snapshot"]):
+                    raise ValueError("Derived study changed its parent article or snapshot.")
+                snapshot = read_snapshot(Path(row["snapshot"]))
+                request = snapshot.request
+                if (not _same(row["request"], request.as_dict())
+                    or request.project != target.project or request.article.replace("_", " ") != target.article
+                        or request.as_of.isoformat() != as_of.isoformat() or request.lag_days != lag
+                        or request.start > baseline.start or request.requested_end < current.end
+                        or request.start.isoformat() != parent_row["analysis"]["baseline"]["window"]["start"]
+                        or request.requested_end.isoformat() != parent_row["analysis"]["current"]["window"]["end"]):
+                    raise ValueError("Derived request must preserve the broader parent request and contain the selected periods.")
+            else:
+                request = build_request(project=target.project, article=target.article,
+                                        start=baseline.start.isoformat(), end=current.end.isoformat(),
+                                        as_of=as_of.isoformat(), lag_days=lag)
+                if not _same(row["request"], request.as_dict()):
+                    raise ValueError("Recorded request differs from study periods or scope.")
             if row["status"] == "collection_failed":
                 reason = row["reason"]
                 if not isinstance(reason, str) or not re.fullmatch(r"[a-z_]{1,80}", reason) or row["error"]["code"] != reason or "analysis" in row:
@@ -118,10 +178,13 @@ def load_report_source(path: Path, checksum: str) -> dict:
             inputs.append({"language": target.language, **source})
         return {
             "path": str(path), "sha256": checksum,
+            "study_version": study["study_version"],
             "resolution": {"path": str(plan.path), "sha256": plan.sha256, "entity_id": plan.entity["entity_id"]},
             "periods": {"baseline": {"start": baseline.start.isoformat(), "end": baseline.end.isoformat()},
                         "current": {"start": current.start.isoformat(), "end": current.end.isoformat()}},
             "as_of": as_of.isoformat(), "excluded_recent_days": lag, "rows": rows, "snapshots": inputs,
+            "source_study": ({"path": str(parent_source["path"]), "sha256": parent_source["sha256"],
+                              "user_reply": source_study["user_reply"]} if derived else None),
         }
     except (PageviewsError, OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, OverflowError) as error:
         raise PageviewsError(
