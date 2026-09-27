@@ -40,6 +40,20 @@ class ReportCliTests(unittest.TestCase):
             self.assertEqual(result["artifacts"]["markdown"], str(markdown.resolve()))
         network.assert_not_called()
 
+    @patch("tools.pageviews.client.urlopen", side_effect=AssertionError("No network"))
+    def test_user_agent_is_accepted_but_unused(self, network):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            saved, _ = saved_study(root)
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                code = main([
+                    "report", "--study", str(saved.path), "--question", "Питання",
+                    "--user-agent", "trend-visor/0.1 (test@example.com)",
+                ])
+            self.assertEqual(code, 0, stream.getvalue())
+        network.assert_not_called()
+
     def test_paging_without_outputs_is_read_only_and_existing_output_is_protected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

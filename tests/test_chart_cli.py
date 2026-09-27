@@ -204,7 +204,6 @@ class ChartCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--snapshot", result.stdout)
         self.assertIn("--output", result.stdout)
-        self.assertNotIn("--user-agent", result.stdout)
 
     def test_missing_matplotlib_returns_json_with_setup_guidance(self):
         result = self.run_without_site_packages(self.arguments)

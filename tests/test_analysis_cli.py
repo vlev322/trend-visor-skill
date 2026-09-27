@@ -93,6 +93,14 @@ class AnalysisCliTests(unittest.TestCase):
         )
         self.assertTrue(result["monthly"]["current"][0]["partial_calendar_month"])
 
+    def test_user_agent_is_accepted_but_unused(self):
+        with patch(
+            "tools.pageviews.client.urlopen", side_effect=AssertionError("No network")
+        ) as network:
+            exit_code, result = self.invoke("--user-agent", "trend-visor/0.1 (test@example.com)")
+        self.assertEqual(exit_code, 0, result)
+        network.assert_not_called()
+
     def test_repeated_analysis_is_identical(self):
         first_code, first = self.invoke("--monthly")
         second_code, second = self.invoke("--monthly")
@@ -201,4 +209,3 @@ class AnalysisCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--snapshot", result.stdout)
         self.assertIn("--monthly", result.stdout)
-        self.assertNotIn("--user-agent", result.stdout)

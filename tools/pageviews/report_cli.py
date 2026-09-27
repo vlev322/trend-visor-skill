@@ -20,6 +20,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pdf", type=Path, help="New one-page .pdf; omitted means no PDF file write")
     parser.add_argument("--offset", type=int, default=0, help="Evidence row offset in requested-language order")
     parser.add_argument("--limit", type=int, default=3, help="Evidence rows per response, 1–10 (default: 3)")
+    parser.add_argument(
+        "--user-agent",
+        help="Accepted for consistency with search/resolve/study; unused, this command makes no HTTP requests",
+    )
     try:
         args = parser.parse_args(argv)
         output = json_output_path(args.output) if args.output is not None else None

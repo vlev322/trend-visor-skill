@@ -35,6 +35,10 @@ def _parser() -> JsonArgumentParser:
         "--output", type=Path,
         help="New PNG path outside snapshots; defaults to a unique file in assets/charts",
     )
+    parser.add_argument(
+        "--user-agent",
+        help="Accepted for consistency with search/resolve/study; unused, this command makes no HTTP requests",
+    )
     return parser
 
 

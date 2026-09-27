@@ -9,7 +9,7 @@ from .artifacts import json_output_path, save_json_artifact
 from .cli_common import JsonArgumentParser, print_error, print_result
 from .errors import PageviewsError
 from .models import parse_date
-from .resolutions import read_resolution
+from .resolutions import read_resolution, user_confirmed_plan
 from .studies import derive_study, run_study
 
 ASSETS = Path(__file__).resolve().parents[2] / "assets"
@@ -20,12 +20,17 @@ def _parser() -> JsonArgumentParser:
         prog="python3 -m tools.pageviews study",
         description="Collect and analyze one reviewed topic across all requested languages.",
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument(
         "--resolution", type=Path, action="append",
         help="Saved resolve --output JSON, confirmed by the user; repeat for languages resolved separately",
     )
     source.add_argument("--from-study", type=Path, help="Reframe an existing study over narrower periods; no HTTP")
+    parser.add_argument(
+        "--article", action="append", metavar="LANG:TITLE",
+        help="Exact project/title the user already confirmed, bypassing resolve entirely "
+        "(e.g. Wikidata is unavailable); repeat per language; combine with --resolution, not with --from-study",
+    )
     parser.add_argument(
         "--months", type=int,
         help="Use the last N full calendar months vs the same months a year earlier (N<=12) "
@@ -43,6 +48,30 @@ def _parser() -> JsonArgumentParser:
     parser.add_argument("--monthly", action="store_true", help="Include calendar-month summaries")
     parser.add_argument("--output", type=Path, help="New study JSON; default: unique assets/studies file")
     return parser
+
+
+def _parse_article(value: str) -> tuple[str, str]:
+    language, separator, title = value.partition(":")
+    if not separator or not language.strip() or not title.strip():
+        raise PageviewsError(
+            "invalid_arguments", f"--article must be LANG:TITLE, e.g. uk:Article title; got {value!r}."
+        )
+    return language.strip(), title.strip()
+
+
+def _plans(args):
+    if args.from_study is not None and (args.resolution or args.article):
+        raise PageviewsError(
+            "invalid_arguments", "--from-study cannot be combined with --resolution or --article."
+        )
+    if args.from_study is not None:
+        return None
+    if not args.resolution and not args.article:
+        raise PageviewsError("invalid_arguments", "Supply --resolution and/or --article, or --from-study.")
+    plans = [read_resolution(path) for path in (args.resolution or [])]
+    if args.article:
+        plans.append(user_confirmed_plan([_parse_article(value) for value in args.article]))
+    return plans
 
 
 def _explicit_periods(args) -> Period | None:
@@ -71,6 +100,7 @@ def _periods(args, as_of: str) -> tuple[Period, Period]:
 def _language_summary(row: dict) -> dict:
     summary = {
         "language": row["language"], "entity_id": row.get("entity_id"),
+        "resolution_status": row.get("resolution_status"),
         "article": row.get("article"), "status": row["status"], "reason": row["reason"],
     }
     analysis = row.get("analysis")
@@ -101,7 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
         output = json_output_path(args.output or ASSETS / "studies" / f"study-{uuid4().hex}.json")
-        if args.from_study:
+        plans = _plans(args)
+        if plans is None:
             if args.as_of is not None or args.user_agent is not None or args.refresh or args.months is not None:
                 raise PageviewsError(
                     "invalid_arguments", "--from-study reuses the parent's periods/collection settings and cannot use collection overrides."
@@ -114,7 +145,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             as_of = args.as_of or datetime.now(timezone.utc).date().isoformat()
             baseline, current = _periods(args, as_of)
             user_agent = args.user_agent or environ.get("TREND_VISOR_USER_AGENT")
-            plans = [read_resolution(path) for path in args.resolution]
             result = run_study(
                 plans, baseline, current, as_of=as_of, lag_days=args.lag_days,
                 cache_dir=args.cache_dir, user_agent=user_agent, timeout=args.timeout,

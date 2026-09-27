@@ -49,6 +49,10 @@ def _parser() -> JsonArgumentParser:
         "--missing-daily-upper-bound", type=int,
         help="Assume missing counts lie between 0 and this value; no default cap",
     )
+    parser.add_argument(
+        "--user-agent",
+        help="Accepted for consistency with search/resolve/study; unused, this command makes no HTTP requests",
+    )
     return parser
 
 

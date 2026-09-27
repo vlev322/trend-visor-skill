@@ -53,7 +53,11 @@ SCENARIOS = {
     "war-nowadays" : (
         "Чи зростає інтерес до теми війни в сучасному світі в україномовній Wikipedia?"
         "Цікавить динаміка переглядів сторінок на цю тему за період з 2021 року по 2023 рік."
-    )
+    ),
+    "drone-interest": (
+        "Ми досліджуємо інтерес до дронів. Чи зростає інтерес до цієї теми в україномовній Wikipedia?"
+        "Цікавить динаміка переглядів сторінок на цю тему за період з 2023 року по 2025 рік."
+    ),
 }
 
 ADAPTER_NOTE = (
@@ -61,7 +65,8 @@ ADAPTER_NOTE = (
     "You have exactly one tool, `pageviews`, which runs one CLI subcommand per "
     "call: {\"command\": one of search/resolve/study/report, "
     "\"args\": [\"--flag\", \"value\", ...]}. Use only flags documented in the "
-    "skill text; never invent a Wikidata ID. A descriptive User-Agent is applied "
+    "skill text; never invent a Wikidata ID or an article title — `study --article` "
+    "requires the user's own exact title. A descriptive User-Agent is applied "
     "automatically; you do not need to pass --user-agent yourself. Keep reasoning "
     "brief. When you need the user's explicit yes/no before collecting pageviews, "
     "or to ask which candidate matches, or which language editions to use, do not "

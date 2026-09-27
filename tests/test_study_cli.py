@@ -493,6 +493,117 @@ class StudyCliTests(unittest.TestCase):
         opener.assert_not_called()
 
     @patch("tools.pageviews.client.urlopen")
+    def test_article_flag_collects_pageviews_without_resolution(self, opener):
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--article", f"cs:{TITLES['cs']}",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "by-article.json"),
+            ])
+        compact = json.loads(output.getvalue())
+        self.assertEqual(code, 0, compact)
+        result = self.full(compact)
+        row = result["results"][0]
+        self.assertEqual(row["status"], "analyzed")
+        self.assertEqual(row["resolution_status"], "user_confirmed")
+        self.assertIsNone(row["entity_id"])
+        self.assertEqual(compact["languages"][0]["resolution_status"], "user_confirmed")
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_article_combines_with_resolution_for_a_different_language(self, opener):
+        resolution = save_resolution(resolution_result(("pl",), unmatched=()), self.root / "pl-only.json")
+        opener.side_effect = [
+            pageviews_http_response("pl", (100, 200, 200, 400)),
+            pageviews_http_response("cs", (10, 20, 30, 60)),
+        ]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--resolution", str(resolution.path), "--article", f"cs:{TITLES['cs']}",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "combined.json"),
+            ])
+        compact = json.loads(output.getvalue())
+        self.assertEqual(code, 0, compact)
+        result = self.full(compact)
+        by_language = {row["language"]: row for row in result["results"]}
+        self.assertEqual(by_language["pl"]["resolution_status"], "matched")
+        self.assertEqual(by_language["cs"]["resolution_status"], "user_confirmed")
+        self.assertEqual([row["status"] for row in result["results"]], ["analyzed", "analyzed"])
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_article_same_language_as_a_matched_resolution_is_rejected(self, opener):
+        resolution = save_resolution(resolution_result(("cs",), unmatched=()), self.root / "cs-res.json")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--resolution", str(resolution.path), "--article", f"cs:{TITLES['cs']}",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "conflict-article.json"),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_request")
+        self.assertFalse((self.root / "conflict-article.json").exists())
+        opener.assert_not_called()
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_article_with_bad_format_is_rejected_before_network(self, opener):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--article", "no-colon-here",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "bad-article.json"),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_arguments")
+        opener.assert_not_called()
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_article_cannot_combine_with_from_study(self, opener):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--from-study", str(self.root / "does-not-matter.json"),
+                "--article", f"cs:{TITLES['cs']}",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--output", str(self.root / "article-from-study.json"),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_arguments")
+        opener.assert_not_called()
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_no_article_source_at_all_is_rejected(self, opener):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study",
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "no-source.json"),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_arguments")
+        opener.assert_not_called()
+
+    @patch("tools.pageviews.client.urlopen")
     def test_months_aligns_periods_to_full_calendar_months(self, opener):
         self.select_languages(("cs",))
         opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))

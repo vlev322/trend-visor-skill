@@ -15,6 +15,9 @@ from .validation import ValidatedSeries, validate_response
 
 STUDY_VERSION = 3
 DERIVED_STUDY_VERSION = 4
+# Resolution statuses that provide a downloadable article: an independently
+# Wikidata-verified match, or one the user confirmed themselves by exact title.
+COLLECTIBLE_STATUSES = {"matched", "user_confirmed"}
 
 
 def _validate_window(baseline: Period, current: Period, as_of: str, lag_days: int) -> None:
@@ -67,6 +70,7 @@ def _summary(results: list[dict[str, object]]) -> dict[str, int]:
     return {
         "requested_languages": len(results),
         "matched_articles": sum(row["resolution_status"] == "matched" for row in results),
+        "user_confirmed_articles": sum(row["resolution_status"] == "user_confirmed" for row in results),
         "analyzed_languages": len(analyzed),
         "languages_with_complete_periods": sum(
             row["analysis"]["status"] == "complete" for row in analyzed
@@ -131,10 +135,11 @@ CAVEATS = [
 def _merge_targets(
     plans: Sequence[ResolutionPlan],
 ) -> list[tuple[ResolutionTarget, ResolutionPlan]]:
-    """Combine targets from one or more --resolution files (e.g. one Wikidata item
-    per language when a topic has no single cross-language item), keeping first-seen
-    language order. A language matched in more than one file is rejected rather than
-    silently picking one; an unmatched language is replaced by a later matched one."""
+    """Combine targets from one or more --resolution/--article sources (e.g. one Wikidata
+    item per language when a topic has no single cross-language item), keeping first-seen
+    language order. A language confirmed (matched or user_confirmed) in more than one source
+    is rejected rather than silently picking one; an unconfirmed language is replaced by a
+    later confirmed one."""
     order: list[str] = []
     chosen: dict[str, tuple[ResolutionTarget, ResolutionPlan]] = {}
     for plan in plans:
@@ -144,12 +149,12 @@ def _merge_targets(
                 chosen[target.language] = (target, plan)
                 continue
             existing_target, _ = chosen[target.language]
-            if existing_target.status == "matched" and target.status == "matched":
+            if existing_target.status in COLLECTIBLE_STATUSES and target.status in COLLECTIBLE_STATUSES:
                 raise PageviewsError(
                     "invalid_request",
                     f"Language {target.language!r} is matched in more than one --resolution file.",
                 )
-            if target.status == "matched":
+            if target.status in COLLECTIBLE_STATUSES:
                 chosen[target.language] = (target, plan)
     return [chosen[language] for language in order]
 
@@ -186,7 +191,7 @@ def run_study(
             start=baseline.start.isoformat(), end=current.end.isoformat(),
             as_of=as_of, lag_days=lag_days,
         )
-        for target, _ in merged if target.status == "matched"
+        for target, _ in merged if target.status in COLLECTIBLE_STATUSES
     }
     results = []
     blocked_by = None
@@ -198,7 +203,7 @@ def run_study(
             "status": "not_collected", "reason": target.status,
         }
         results.append(row)
-        if target.status != "matched":
+        if target.status not in COLLECTIBLE_STATUSES:
             continue
         request = requests[target.language]
         row["request"] = request.as_dict()

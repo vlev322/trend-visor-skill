@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from .wikimedia_api import WIKIDATA_HOST
 TARGET_STATUSES = {
     "matched", "no_sitelink", "needs_review", "page_missing",
     "unsupported_language", "unavailable_project", "check_failed", "not_checked",
+    "user_confirmed",
 }
 
 
@@ -187,3 +189,26 @@ def read_resolution(path: Path) -> ResolutionPlan:
         ) from error
     entity, targets = _resolution_parts(result)
     return ResolutionPlan(path, digest, entity, targets, result)
+
+
+def user_confirmed_plan(articles: Sequence[tuple[str, str]]) -> ResolutionPlan:
+    """Build a ResolutionPlan for exact project/article titles the user has already
+    confirmed themselves (e.g. Wikidata search/resolve is unavailable). Never checked
+    against Wikidata: entity_id/label stay None and the report/study output marks
+    these rows 'user_confirmed' instead of 'matched' so this is never mistaken for an
+    independently verified match."""
+    targets = []
+    seen_languages = set()
+    for language, title in articles:
+        language = language_code(language)
+        if language in seen_languages:
+            raise PageviewsError("invalid_request", f"Language {language!r} given more than once.")
+        seen_languages.add(language)
+        project = normalize_project(f"{language}.wikipedia.org")
+        article = normalize_article(title)
+        record = {"status": "user_confirmed", "language": language, "project": project, "article": article}
+        targets.append(ResolutionTarget(language, "user_confirmed", project, article, record))
+    if not targets:
+        raise PageviewsError("invalid_request", "At least one --article is required.")
+    entity = {"entity_id": None, "label": None, "source": "user_confirmed"}
+    return ResolutionPlan(Path("<user-confirmed>"), None, entity, tuple(targets), {"sources": []})
