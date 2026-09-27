@@ -33,7 +33,6 @@ class StudyCliTests(unittest.TestCase):
         )
         self.arguments = [
             "study", "--resolution", str(self.saved.path),
-            "--confirm-sha256", self.saved.sha256,
             "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
             "--current-start", "2026-07-03", "--current-end", "2026-07-04",
             "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
@@ -49,9 +48,7 @@ class StudyCliTests(unittest.TestCase):
         self.saved = save_resolution(
             resolution_result(languages, unmatched), self.root / "selected.json"
         )
-        self.arguments.extend([
-            "--resolution", str(self.saved.path), "--confirm-sha256", self.saved.sha256,
-        ])
+        self.arguments.extend(["--resolution", str(self.saved.path)])
 
     @patch("tools.pageviews.client.urlopen")
     def test_collects_only_matches_and_reuses_snapshots_offline(self, opener):
@@ -121,7 +118,7 @@ class StudyCliTests(unittest.TestCase):
             self.assertEqual(row["analysis"]["current"]["window"], result["periods"]["current"])
 
     @patch("tools.pageviews.client.urlopen")
-    def test_missing_days_and_zero_baseline_are_excluded_without_losing_levels(self, opener):
+    def test_days_without_an_api_row_count_as_zero_but_zero_baseline_still_blocks_percent(self, opener):
         self.select_languages(("cs", "pl", "en"))
         opener.side_effect = [
             pageviews_http_response("cs", (10, None, 30, 60)),
@@ -132,17 +129,18 @@ class StudyCliTests(unittest.TestCase):
             "--user-agent", "study-tests/1", "--output", str(self.root / "partial.json"),
         )
         self.assertEqual(code, 0)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "complete")
         comparison = result["comparison"]
-        self.assertEqual(comparison["status"], "not_computed")
-        self.assertEqual(comparison["reason"], "fewer_than_two_comparable_languages")
-        self.assertEqual(comparison["eligible_languages"], ["en"])
+        self.assertEqual(comparison["status"], "available")
+        self.assertEqual(comparison["eligible_languages"], ["cs", "en"])
         rows = comparison["rows"]
-        self.assertEqual([row["change_percent"] for row in rows], [None, None, -50.0])
-        self.assertEqual([row["reason"] for row in rows], ["incomplete_coverage", "zero_baseline", None])
-        self.assertEqual(rows[0]["baseline_coverage"]["missing_days"], 1)
-        self.assertEqual(rows[0]["baseline_mean_daily_views_observed"], 10.0)
+        self.assertEqual([row["change_percent"] for row in rows], [800.0, None, -50.0])
+        self.assertEqual([row["reason"] for row in rows], [None, "zero_baseline", None])
+        self.assertEqual(rows[0]["baseline_coverage"]["assumed_zero_days"], 1)
+        self.assertEqual(rows[0]["baseline_coverage"]["missing_days"], 0)
+        self.assertEqual(rows[0]["baseline_mean_daily_views_observed"], 5.0)
         self.assertEqual(rows[1]["baseline_coverage"]["explicit_zero_days"], 2)
+        self.assertEqual(rows[1]["baseline_coverage"]["assumed_zero_days"], 0)
         self.assertEqual(rows[1]["baseline_mean_daily_views_observed"], 0.0)
 
     @patch("tools.pageviews.client.urlopen")
@@ -222,8 +220,7 @@ class StudyCliTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             code = main([
-                "study", "--from-study", str(original_path), original["artifacts"]["study_sha256"],
-                "--follow-up-confirmation", "Так, підтверджую ці нові періоди.",
+                "study", "--from-study", str(original_path),
                 "--baseline-start", "2026-07-02", "--baseline-end", "2026-07-02",
                 "--current-start", "2026-07-03", "--current-end", "2026-07-03",
                 "--output", str(self.root / "derived.json"),
@@ -236,23 +233,23 @@ class StudyCliTests(unittest.TestCase):
         self.assertEqual(row["request"], original["results"][0]["request"])
         self.assertEqual(row["snapshot"], original["results"][0]["snapshot"])
         self.assertEqual(row["analysis"]["comparison"]["change_percent"], 50.0)
-        self.assertEqual(derived["source_study"]["sha256"], original["artifacts"]["study_sha256"])
+        self.assertEqual(derived["source_study"]["path"], str(original_path))
         self.assertEqual(original_path.read_bytes(), original_bytes)
         self.assertEqual(opener.call_count, 1)
 
         report = build_report(
-            Path(derived["artifacts"]["study"]), derived["artifacts"]["study_sha256"],
+            Path(derived["artifacts"]["study"]),
             question="Чи змінилися перегляди у вибраних підперіодах?",
         )
         self.assertEqual(report["periods"]["baseline"], {"start": "2026-07-02", "end": "2026-07-02"})
         self.assertEqual(report["evidence"][0]["analysis"]["comparison"]["change_percent"], 50.0)
-        self.assertEqual(report["verification"]["network_requests"], 0)
+        self.assertEqual(report["status"], "completed")
 
-        forged = json.loads(Path(derived["artifacts"]["study"]).read_text())
-        forged["source_study"]["sha256"] = "0" * 64
-        forged_ref = save_json_artifact(forged, self.root / "forged-derived.json")
+        malformed = json.loads(Path(derived["artifacts"]["study"]).read_text())
+        del malformed["operation"]
+        malformed_ref = save_json_artifact(malformed, self.root / "malformed-derived.json")
         with self.assertRaises(PageviewsError) as caught:
-            build_report(forged_ref.path, forged_ref.sha256, question="tampered parent reference")
+            build_report(malformed_ref.path, question="malformed study reference")
         self.assertEqual(caught.exception.code, "report_source_error")
         self.assertEqual(opener.call_count, 1)
 
@@ -268,8 +265,7 @@ class StudyCliTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             code = main([
-                "study", "--from-study", original["artifacts"]["study"], original["artifacts"]["study_sha256"],
-                "--follow-up-confirmation", "Так.",
+                "study", "--from-study", original["artifacts"]["study"],
                 "--baseline-start", "2026-06-30", "--baseline-end", "2026-07-02",
                 "--current-start", "2026-07-03", "--current-end", "2026-07-03",
                 "--output", str(output_path),
@@ -313,8 +309,7 @@ class StudyCliTests(unittest.TestCase):
         self.assertEqual(latest["results"][0]["analysis"]["comparison"]["change_percent"], 300.0)
 
         old_study_path = self.root / "first.json"
-        old_study_sha256 = hashlib.sha256(old_study_path.read_bytes()).hexdigest()
-        historical = build_report(old_study_path, old_study_sha256, question="Replay pinned historical snapshot")
+        historical = build_report(old_study_path, question="Replay pinned historical snapshot")
         self.assertEqual(historical["evidence"][0]["analysis"]["comparison"]["change_percent"], 200.0)
         self.assertEqual(historical["evidence"][0]["source"]["response_sha256"],
                          first["results"][0]["source"]["response_sha256"])
@@ -414,25 +409,23 @@ class StudyCliTests(unittest.TestCase):
         self.assertFalse((self.root / "cache").exists())
 
     @patch("tools.pageviews.client.urlopen")
-    def test_confirmation_is_mandatory_and_changed_file_never_fetches(self, opener):
-        output = self.root / "blocked.json"
-        code, result = self.invoke(
-            "--confirm-sha256", "0" * 64, "--user-agent", "study-tests/1", "--output", str(output),
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(result["error"]["code"], "confirmation_mismatch")
-        original = self.saved.path.read_bytes()
-        self.saved.path.write_bytes(original + b"\n")
-        code, result = self.invoke("--offline", "--output", str(output))
-        self.assertEqual(code, 1)
-        self.assertEqual(result["error"]["code"], "confirmation_mismatch")
-        index = self.arguments.index("--confirm-sha256")
+    def test_as_of_defaults_to_today_when_omitted(self, opener):
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        index = self.arguments.index("--as-of")
         del self.arguments[index:index + 2]
-        code, result = self.invoke("--offline", "--output", str(output))
-        self.assertEqual(code, 2)
-        self.assertEqual(result["error"]["code"], "invalid_arguments")
-        self.assertFalse(output.exists())
-        opener.assert_not_called()
+        with patch("tools.pageviews.study_cli.datetime") as clock:
+            clock.now.return_value.date.return_value.isoformat.return_value = "2026-09-25"
+            code, result = self.invoke("--user-agent", "study-tests/1", "--output", str(self.root / "defaulted.json"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["as_of"], "2026-09-25")
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_user_agent_falls_back_to_environment_variable(self, opener):
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        with patch.dict(os.environ, {"TREND_VISOR_USER_AGENT": "study-tests/1 (env fallback)"}):
+            code, result = self.invoke("--output", str(self.root / "env-agent.json"))
+        self.assertEqual(code, 0, result)
+        opener.assert_called_once()
 
     @patch("tools.pageviews.client.urlopen")
     def test_unresolved_topic_is_reported_without_pageview_requests(self, opener):
@@ -476,5 +469,5 @@ class StudyCliTests(unittest.TestCase):
             capture_output=True, text=True, timeout=10, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--confirm-sha256", result.stdout)
+        self.assertIn("--from-study", result.stdout)
         self.assertIn("--offline", result.stdout)

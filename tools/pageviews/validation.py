@@ -32,6 +32,15 @@ class ValidatedSeries:
         }
 
 
+def fill_missing_as_zero(series: ValidatedSeries) -> ValidatedSeries:
+    """Wikimedia's per-article API omits days with zero views instead of
+    returning views=0; treat every day the API did not report as an observed 0."""
+    return ValidatedSeries(days=tuple(
+        day if day.views is not None else DailyViews(day=day.day, views=0)
+        for day in series.days
+    ))
+
+
 def _invalid_row(index: int, reason: str, message: str) -> PageviewsError:
     return PageviewsError(
         "invalid_response", message, details={"row": index, "reason": reason}

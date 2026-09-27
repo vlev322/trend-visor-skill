@@ -32,12 +32,3 @@ def strict_json_loads(value: str | bytes | bytearray) -> object:
         )
     except RecursionError as error:
         raise ValueError("Excessively nested JSON.") from error
-
-
-def strict_json_object(text: str, *, max_chars: int = 10000) -> dict:
-    if not isinstance(text, str) or len(text) > max_chars:
-        raise ValueError("Expected bounded JSON text.")
-    result = strict_json_loads(text)
-    if not isinstance(result, dict):
-        raise ValueError("Expected a JSON object.")
-    return result

@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .errors import PageviewsError
-from .validation import ValidatedSeries
+from .validation import ValidatedSeries, fill_missing_as_zero
 
 ANALYSIS_VERSION = 1
+MISSING_DATA_POLICY_ZERO_FILLED = "absent_api_rows_counted_as_zero"
 OUTPUT_DECIMAL_PLACES = 6
 
 
@@ -189,4 +190,34 @@ def analyze_series(
             "baseline": summarize_months(series, baseline_period),
             "current": summarize_months(series, current_period),
         }
+    return result
+
+
+def analyze_series_zero_filled(
+    series: ValidatedSeries,
+    baseline_period: Period,
+    current_period: Period,
+    *,
+    include_monthly: bool = False,
+) -> dict[str, object]:
+    """Same as analyze_series, but days the API omitted (views=None) count as
+    an observed 0 instead of blocking the comparison; assumed_zero_days records
+    how many of each period's days were filled in this way. If the entire
+    snapshot never had a single explicit row, this is too suspicious (e.g. a
+    mismatched title) to assume real zero traffic, so it keeps the strict,
+    missing-blocks-comparison behavior instead of filling."""
+    if series.status == "no_observations":
+        return analyze_series(series, baseline_period, current_period, include_monthly=include_monthly)
+    original_baseline = summarize_period(series, baseline_period)
+    original_current = summarize_period(series, current_period)
+    result = analyze_series(
+        fill_missing_as_zero(series), baseline_period, current_period,
+        include_monthly=include_monthly,
+    )
+    result["method"]["missing_data_policy"] = MISSING_DATA_POLICY_ZERO_FILLED
+    for name, original in (("baseline", original_baseline), ("current", original_current)):
+        coverage = result[name]["coverage"]
+        coverage["assumed_zero_days"] = original.missing_days
+        # Only true API-reported zeros, not the days this wrapper filled in.
+        coverage["explicit_zero_days"] = original.explicit_zero_days
     return result

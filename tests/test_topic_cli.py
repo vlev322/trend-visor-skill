@@ -67,7 +67,7 @@ class TopicCliTests(unittest.TestCase):
                 "--user-agent", "test/1", "--output", str(destination),
             )
             self.assertEqual(code, 0)
-            plan = read_resolution(destination, result["artifacts"]["resolution_sha256"])
+            plan = read_resolution(destination)
             self.assertEqual([target.status for target in plan.targets], ["no_sitelink", "matched"])
             self.assertEqual(plan.result["entity"], result["entity"])
             self.assertEqual(plan.result["targets"], result["targets"])
@@ -108,7 +108,7 @@ class TopicCliTests(unittest.TestCase):
                 self.assertEqual(result["status"], "error")
         code, result = self.invoke("search", "--query", "Topic")
         self.assertEqual(code, 2)
-        self.assertEqual(result["error"]["code"], "invalid_arguments")
+        self.assertEqual(result["error"]["code"], "invalid_request")
         opener.assert_not_called()
 
     @patch("tools.pageviews.client.urlopen")

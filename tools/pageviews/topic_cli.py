@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from os import environ
 from pathlib import Path
 
 from .artifacts import json_output_path
@@ -18,8 +19,8 @@ def _parser(operation: str) -> JsonArgumentParser:
         ),
     )
     parser.add_argument(
-        "--user-agent", required=True,
-        help="Descriptive Wikimedia client identifier with real contact for ongoing use",
+        "--user-agent",
+        help="Descriptive Wikimedia client identifier with real contact; defaults to TREND_VISOR_USER_AGENT",
     )
     parser.add_argument(
         "--timeout", type=float, default=30.0, help="HTTP timeout per request in seconds"
@@ -55,16 +56,17 @@ def main(operation: str, argv: Sequence[str] | None = None) -> int:
         if operation not in {"search", "resolve"}:
             raise PageviewsError("invalid_arguments", "Expected search or resolve.")
         args = _parser(operation).parse_args(argv)
+        user_agent = args.user_agent or environ.get("TREND_VISOR_USER_AGENT")
         if operation == "search":
             result = search_topics(
                 args.query, language=args.language, limit=args.limit, offset=args.offset,
-                user_agent=args.user_agent, timeout=args.timeout,
+                user_agent=user_agent, timeout=args.timeout,
             )
         else:
             output = json_output_path(args.output) if args.output is not None else None
             result = resolve_topic(
                 args.entity, args.languages, label_language=args.label_language,
-                user_agent=args.user_agent, timeout=args.timeout,
+                user_agent=user_agent, timeout=args.timeout,
             )
             if output is not None:
                 saved = save_resolution(result, output)

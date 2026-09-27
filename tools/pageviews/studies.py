@@ -1,17 +1,16 @@
+import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import SCHEMA_VERSION
-from .analysis import Period, analyze_series, validate_period_order
+from .analysis import Period, analyze_series_zero_filled, validate_period_order
 from .client import fetch_response, validate_user_agent
 from .errors import PageviewsError
-from .methodology import MethodologyOptions, assess_methodology, prepare_methodology
 from .models import EARLIEST_DATE, PageviewsRequest, build_request, parse_date
 from .resolutions import ResolutionPlan
-from .storage import Snapshot, load_snapshot, save_snapshot
+from .storage import Snapshot, load_snapshot, read_snapshot, save_snapshot
 from .validation import ValidatedSeries, validate_response
-from tools.request_metrics import record_cache_event
 
 STUDY_VERSION = 1
 DERIVED_STUDY_VERSION = 2
@@ -42,16 +41,7 @@ def _collect_snapshot(
     refresh: bool,
     blocked_by: dict | None,
 ) -> tuple[Snapshot, ValidatedSeries, bool]:
-    if refresh:
-        snapshot = None
-        record_cache_event("bypasses")
-    else:
-        try:
-            snapshot = load_snapshot(cache_dir, request)
-        except PageviewsError:
-            record_cache_event("errors")
-            raise
-        record_cache_event("hits" if snapshot is not None else "misses")
+    snapshot = None if refresh else load_snapshot(cache_dir, request)
     cache_hit = snapshot is not None
     if snapshot is None:
         if offline:
@@ -125,6 +115,18 @@ def _comparison_table(results: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+CAVEATS = [
+    "Language editions are not countries or markets; views are events, not unique people.",
+    "Wikimedia's user agent classification does not guarantee the absence of bots.",
+    "A confirmed item match does not establish equivalent article scope across languages.",
+    "Counts follow the confirmed title; historical moves and redirect titles are not combined.",
+    "Wikimedia's API omits days with zero views instead of reporting 0; this study counts "
+    "each omitted day as an observed 0 (see coverage.assumed_zero_days per period).",
+    "Observed differences do not establish statistical significance, persistence or product demand.",
+    "A single article's traffic can move with the whole language edition, not just topic interest.",
+]
+
+
 def run_study(
     plan: ResolutionPlan,
     baseline: Period,
@@ -138,10 +140,8 @@ def run_study(
     offline: bool = False,
     refresh: bool = False,
     include_monthly: bool = False,
-    methodology: MethodologyOptions | None = None,
 ) -> dict[str, object]:
     _validate_window(baseline, current, as_of, lag_days)
-    prepare_methodology(methodology, baseline, current)
     if offline and refresh:
         raise PageviewsError("invalid_request", "offline and refresh cannot be combined.")
     if not math.isfinite(timeout) or timeout <= 0:
@@ -175,11 +175,7 @@ def run_study(
                 request, cache_dir, user_agent=user_agent, timeout=timeout,
                 offline=offline, refresh=refresh, blocked_by=blocked_by,
             )
-            analysis = analyze_series(series, baseline, current, include_monthly=include_monthly)
-            if methodology is not None:
-                analysis["methodology"] = assess_methodology(
-                    series, baseline, current, options=methodology,
-                )
+            analysis = analyze_series_zero_filled(series, baseline, current, include_monthly=include_monthly)
         except PageviewsError as error:
             row.update(status="collection_failed", reason=error.code, error=error.as_dict())
             if (
@@ -198,13 +194,13 @@ def run_study(
     status = "complete" if summary["languages_with_complete_periods"] == len(results) else (
         "partial" if summary["analyzed_languages"] else "unavailable"
     )
-    result = {
+    return {
         "schema_version": SCHEMA_VERSION, "study_version": STUDY_VERSION,
         "operation": "study", "status": status,
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "resolution": {
             "path": str(plan.path), "sha256": plan.sha256, "entity": plan.entity,
-            "sources": plan.result["sources"], "confirmation": "explicit_file_checksum",
+            "sources": plan.result["sources"],
         },
         "periods": {
             "baseline": {"start": baseline.start.isoformat(), "end": baseline.end.isoformat()},
@@ -218,26 +214,98 @@ def run_study(
             "seasonality_adjusted": False, "statistical_inference_performed": False,
         },
         "summary": summary, "results": results, "comparison": _comparison_table(results),
-        "caveats": [
-            "Language editions are not countries or markets; views are events, not unique people.",
-            "Wikimedia's user agent classification does not guarantee the absence of bots.",
-            "A confirmed item match does not establish equivalent article scope across languages.",
-            "Counts follow the confirmed title; historical moves and redirect titles are not combined.",
-            "Missing mappings or observations are unknown, not evidence of zero audience interest.",
-            "Observed differences do not establish statistical significance, persistence or product demand.",
+        "caveats": list(CAVEATS),
+    }
+
+
+def derive_study(
+    source_study: Path,
+    baseline: Period,
+    current: Period,
+    *,
+    include_monthly: bool = False,
+) -> dict[str, object]:
+    """Reframe an original study's already-collected snapshots over narrower confirmed
+    periods; performs zero Wikimedia HTTP requests."""
+    try:
+        path = source_study.expanduser().resolve()
+        parent = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            parent.get("schema_version") != SCHEMA_VERSION or parent.get("study_version") != STUDY_VERSION
+            or parent.get("operation") != "study"
+        ):
+            raise ValueError("Only an original, non-derived study can be reframed.")
+        original_baseline = Period(
+            parse_date(parent["periods"]["baseline"]["start"], "baseline_start"),
+            parse_date(parent["periods"]["baseline"]["end"], "baseline_end"),
+        )
+        original_current = Period(
+            parse_date(parent["periods"]["current"]["start"], "current_start"),
+            parse_date(parent["periods"]["current"]["end"], "current_end"),
+        )
+        validate_period_order(baseline, current)
+        if (baseline.start < original_baseline.start or baseline.end > original_current.end
+                or current.start < original_baseline.start or current.end > original_current.end):
+            raise ValueError("Follow-up periods must remain inside the parent study's outer window.")
+        as_of = parent["as_of"]
+        lag_days = parent["excluded_recent_days"]
+        _validate_window(baseline, current, as_of, lag_days)
+    except PageviewsError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError) as error:
+        raise PageviewsError(
+            "invalid_request", "The source study cannot support this follow-up scope.",
+            details={"exception_type": type(error).__name__},
+        ) from error
+
+    results = []
+    for original_row in parent["results"]:
+        if original_row["status"] != "analyzed":
+            results.append(original_row)
+            continue
+        try:
+            snapshot = read_snapshot(Path(original_row["snapshot"]))
+            request = snapshot.request
+            if baseline.start < request.start or current.end > request.requested_end:
+                raise ValueError("Pinned snapshot does not cover the requested follow-up scope.")
+            series = validate_response(snapshot.response.body, request)
+            analysis = analyze_series_zero_filled(series, baseline, current, include_monthly=include_monthly)
+        except PageviewsError as error:
+            raise PageviewsError(
+                "study_source_error", "A pinned source snapshot failed follow-up verification; no HTTP was attempted.",
+                details={"language": original_row["language"], "source_code": error.code},
+            ) from error
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError) as error:
+            raise PageviewsError(
+                "study_source_error", "A pinned source snapshot failed follow-up verification; no HTTP was attempted.",
+                details={"language": original_row["language"], "exception_type": type(error).__name__},
+            ) from error
+        results.append({**original_row, "analysis": analysis, "snapshot_reused": True})
+
+    summary = _summary(results)
+    status = "complete" if summary["languages_with_complete_periods"] == len(results) else (
+        "partial" if summary["analyzed_languages"] else "unavailable"
+    )
+    return {
+        "schema_version": SCHEMA_VERSION, "study_version": DERIVED_STUDY_VERSION,
+        "operation": "study", "status": status,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mode": "pinned_snapshot_reuse",
+        "source_study": {"path": str(path)},
+        "resolution": parent["resolution"],
+        "periods": {
+            "baseline": {"start": baseline.start.isoformat(), "end": baseline.end.isoformat()},
+            "current": {"start": current.start.isoformat(), "end": current.end.isoformat()},
+        },
+        "as_of": as_of, "excluded_recent_days": lag_days,
+        "method": {
+            "kind": "descriptive", "same_periods_for_all_languages": True,
+            "missing_data_policy": "require_complete_periods_for_change",
+            "seasonality_adjusted": False, "statistical_inference_performed": False,
+        },
+        "summary": summary, "results": results, "comparison": _comparison_table(results),
+        "caveats": list(parent.get("caveats", CAVEATS)) + [
+            "This follow-up reuses the exact parent snapshot; its recorded HTTP request window remains unchanged.",
+            "Follow-up periods are a subset of the parent study window; no new network request was made.",
         ],
     }
-    if methodology is not None:
-        modeled = [
-            row["analysis"]["methodology"]["trend_model"]
-            for row in results if row["status"] == "analyzed"
-        ]
-        result["methodology"] = {
-            "methodology_version": 1, "parameters": methodology.as_dict(),
-            "models_fitted": sum(model["status"] == "computed" for model in modeled),
-            "models_with_intervals": sum(model.get("statistical_inference_performed", False) for model in modeled),
-            "inference_scope": "individual_articles_not_between_language_differences",
-            "parent_method_scope": "descriptive_period_summaries_and_mean_comparison",
-            "comparison_table_unchanged": True,
-        }
-    return result

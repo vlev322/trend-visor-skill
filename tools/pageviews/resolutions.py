@@ -1,5 +1,4 @@
 import hashlib
-import hmac
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -170,11 +169,7 @@ def save_resolution(result: dict[str, object], path: Path) -> JsonArtifact:
     return save_json_artifact(result, path)
 
 
-def read_resolution(path: Path, confirmation: str) -> ResolutionPlan:
-    if not isinstance(confirmation, str) or not re.fullmatch(r"[a-f0-9]{64}", confirmation):
-        raise PageviewsError(
-            "invalid_request", "Confirm the exact resolution_sha256 from the reviewed result."
-        )
+def read_resolution(path: Path) -> ResolutionPlan:
     try:
         path = path.expanduser().resolve()
         with path.open("rb") as file:
@@ -182,11 +177,6 @@ def read_resolution(path: Path, confirmation: str) -> ResolutionPlan:
         if len(body) > MAX_ARTIFACT_BYTES:
             raise PageviewsError("resolution_error", "Saved resolution exceeds 10 MiB.")
         digest = hashlib.sha256(body).hexdigest()
-        if not hmac.compare_digest(digest, confirmation):
-            raise PageviewsError(
-                "confirmation_mismatch",
-                "Resolution bytes differ from the confirmed checksum. Review the file again.",
-            )
         result = strict_json_loads(body)
     except PageviewsError:
         raise

@@ -36,7 +36,7 @@ def fetch_action(
         "maxlag": 5,
     }
     url = f"https://{host}/w/api.php?{urlencode(query)}"
-    source = fetch_url(url, user_agent=user_agent, timeout=timeout, metric_category="metadata")
+    source = fetch_url(url, user_agent=user_agent, timeout=timeout)
     try:
         payload = json.loads(source.body)
     except ValueError as error:

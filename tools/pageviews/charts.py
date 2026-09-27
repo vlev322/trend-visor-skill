@@ -118,7 +118,7 @@ def _draw_footer(
             0,
             position,
             f"{period.name} coverage: {summary.observed_days}/{summary.expected_days} "
-            f"days observed  |  Missing: {summary.missing_days}  |  "
+            f"days had an API row  |  No API row (counted as 0): {summary.missing_days}  |  "
             f"Explicit zeros: {summary.explicit_zero_days}",
             transform=axes.transAxes,
             color=color,
@@ -126,8 +126,8 @@ def _draw_footer(
             va="top",
         )
     notes = (
-        (0.55, "Raw daily values; no smoothing. Missing records: "
-         "line gaps and red ticks above the plot."),
+        (0.55, "Raw daily values; no smoothing. Wikimedia omits zero-view days: "
+         "line gaps and red ticks above the plot mark days counted as 0 here."),
         (0.37, "Pageviews are events, not unique people or evidence of purchase intent."),
         (0.19, f"Source: Wikimedia Analytics API  |  Fetched (UTC): {source.fetched_at}"),
         (0.01, f"Raw SHA-256: {source.response_sha256}"),

@@ -1,1 +1,0 @@
-"""Bounded model tests for interpreting analytical evidence."""

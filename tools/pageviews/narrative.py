@@ -17,7 +17,7 @@ def format_number(value: float | None, *, signed: bool = False) -> str:
     return text.replace(",", " ").replace(".", ",").replace("-", "−")
 
 
-def period_text(row: dict, detailed: dict) -> str:
+def period_text(row: dict) -> str:
     language = row["language"]
     if row["status"] != "analyzed":
         return f"{language}: аналіз статті недоступний ({row['reason']}); це не доказ відсутності інтересу."
@@ -37,18 +37,20 @@ def period_text(row: dict, detailed: dict) -> str:
         change = format_number(analysis["comparison"]["change_percent"], signed=True)
         sentences.append(f"Середні перегляди {verb} з {means[0]} до {means[1]} на день; описова зміна — {change}%.")
     b, c = baseline["coverage"], current["coverage"]
-    sentences.append(
-        f"Спостережено {b['observed_days']}/{b['expected_days']} і {c['observed_days']}/{c['expected_days']} днів; "
-        f"пропущено загалом {b['missing_days'] + c['missing_days']}."
-    )
-    months = analysis.get("methodology", {}).get("calendar_comparison", {}).get("summary", {})
+    zero_filled = b.get("assumed_zero_days", 0) + c.get("assumed_zero_days", 0)
+    if zero_filled:
+        sentences.append(
+            f"Wikimedia не повернула рядків за {b.get('assumed_zero_days', 0)} і "
+            f"{c.get('assumed_zero_days', 0)} днів у цих періодах відповідно; їх пораховано як 0 переглядів."
+        )
+    months = (row.get("calendar") or {}).get("summary", {})
     if months.get("computed_pairs"):
         sentences.append(
             f"Повних порівнянних місячних пар: {months['computed_pairs']}; "
             f"зі зниженням — {months['lower_pairs']}, зі зростанням — {months['higher_pairs']}, "
             f"без зміни — {months['equal_pairs']}; виключено — {months['excluded_pairs']}."
         )
-    diagnostics = detailed.get("diagnostics", {})
+    diagnostics = row.get("diagnostics") or {}
     parameters = diagnostics.get("parameters", {})
     scenarios = []
     largest = diagnostics.get("largest_days", {}).get("comparison_after_exclusion", {})
@@ -66,23 +68,6 @@ def diagnostic_text(diagnostics: dict) -> str:
     parameters = diagnostics["parameters"]
     sentences = [f"Параметри сценаріїв: найбільших днів на період — {parameters['top_days']}; "
                  f"обрізання кожного краю — {parameters['trim_days']} днів."]
-    missing = diagnostics["missing_values"]
-    requirement = missing["break_even"]
-    if requirement["status"] == "computed":
-        sentences.append(
-            f"Щоб повне середнє поточного періоду досягло базового, на пропущені дні потрібно щонайменше "
-            f"{requirement['required_missing_views_total']} переглядів сумарно. Це вимога, не оцінка фактичних пропусків."
-        )
-    bounds = missing["conditional_bounds"]
-    if bounds["status"] == "computed":
-        sentences.append(
-            f"За припущення, що кожен пропущений день має від 0 до {bounds['assumed_daily_upper_bound']} переглядів, "
-            f"межі зміни — від {format_number(bounds['lower_change_percent'], signed=True)}% "
-            f"до {format_number(bounds['upper_change_percent'], signed=True)}%; це межі припущення, не довірчий інтервал."
-        )
-    elif missing["missing_days"]["baseline"] + missing["missing_days"]["current"]:
-        sentences.append(f"Межі за припущенням про пропуски не обчислено ({bounds['reason']}); "
-                         f"задана верхня межа: {bounds['assumed_daily_upper_bound'] if bounds['assumed_daily_upper_bound'] is not None else 'не задана'}.")
     largest = diagnostics["largest_days"]["comparison_after_exclusion"]
     if largest["status"] != "computed":
         sentences.append(f"Порівняння без найбільших днів недоступне ({largest['reason']}).")

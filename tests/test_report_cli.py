@@ -24,9 +24,9 @@ class ReportCliTests(unittest.TestCase):
             stream = io.StringIO()
             with redirect_stdout(stream):
                 code = main([
-                    "report", "--study", str(saved.path), "--study-sha256", saved.sha256,
+                    "report", "--study", str(saved.path),
                     "--question", "Порівняй ці статті", "--criterion", "Покриття даних",
-                    "--output", str(output), "--markdown", str(markdown),
+                    "--limit", "1", "--output", str(output), "--markdown", str(markdown),
                 ])
             self.assertEqual(code, 0, stream.getvalue())
             result = json.loads(stream.getvalue())
@@ -44,11 +44,11 @@ class ReportCliTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             saved, _ = saved_study(root)
-            arguments = ["report", "--study", str(saved.path), "--study-sha256", saved.sha256, "--question", "Порівняй"]
+            arguments = ["report", "--study", str(saved.path), "--question", "Порівняй"]
             before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
             stream = io.StringIO()
             with redirect_stdout(stream):
-                code = main([*arguments, "--offset", "2"])
+                code = main([*arguments, "--offset", "2", "--limit", "1"])
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(stream.getvalue())["evidence"][0]["language"], "en")
             self.assertEqual(before, {path: path.read_bytes() for path in root.rglob("*") if path.is_file()})
@@ -64,10 +64,13 @@ class ReportCliTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             saved, _ = saved_study(root)
-            arguments = ["report", "--study", str(saved.path), "--study-sha256", saved.sha256, "--question", "Порівняй"]
-            for extra in (["--study-sha256", "0" * 64], ["--offset", "99"], ["--question", ""], ["--limit", "4"]):
+            arguments = ["report", "--study", str(root / "missing.json"), "--question", "Порівняй"]
+            for extra in ([], ["--offset", "99"], ["--question", ""], ["--limit", "11"]):
                 with self.subTest(extra=extra), redirect_stdout(io.StringIO()):
-                    code = main([*arguments, "--output", str(root / "new.json"), "--markdown", str(root / "new.md"), *extra])
+                    base = arguments if extra == [] else [
+                        "report", "--study", str(saved.path), "--question", "Порівняй",
+                    ]
+                    code = main([*base, "--output", str(root / "new.json"), "--markdown", str(root / "new.md"), *extra])
                     self.assertNotEqual(code, 0)
                     self.assertFalse((root / "new.json").exists())
                     self.assertFalse((root / "new.md").exists())
@@ -76,12 +79,12 @@ class ReportCliTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             saved, _ = saved_study(root)
-            report = build_report(saved.path, saved.sha256, question="Порівняй")
+            report = build_report(saved.path, question="Порівняй")
             page_bytes = len(json.dumps(evidence_page(report), ensure_ascii=False, indent=2).encode()) + 1
             output = root / "new.json"
             stream = io.StringIO()
             with patch("tools.pageviews.reports.MAX_EVIDENCE_BYTES", page_bytes), redirect_stdout(stream):
-                code = main(["report", "--study", str(saved.path), "--study-sha256", saved.sha256,
+                code = main(["report", "--study", str(saved.path),
                              "--question", "Порівняй", "--output", str(output)])
             self.assertEqual(code, 1)
             self.assertEqual(json.loads(stream.getvalue())["error"]["code"], "evidence_too_large")
@@ -90,7 +93,7 @@ class ReportCliTests(unittest.TestCase):
     def test_help_and_report_work_without_optional_dependencies(self):
         with TemporaryDirectory() as directory:
             saved, _ = saved_study(Path(directory))
-            for args in (["--help"], ["--study", str(saved.path), "--study-sha256", saved.sha256, "--question", "Порівняй"]):
+            for args in (["--help"], ["--study", str(saved.path), "--question", "Порівняй"]):
                 with self.subTest(args=args):
                     result = subprocess.run(
                         [sys.executable, "-S", "-m", "tools.pageviews", "report", *args],
@@ -98,4 +101,4 @@ class ReportCliTests(unittest.TestCase):
                         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": ""}, check=False,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-                    self.assertTrue("--study-sha256" in result.stdout if args == ["--help"] else json.loads(result.stdout)["total_rows"] == 3)
+                    self.assertTrue("--study" in result.stdout if args == ["--help"] else json.loads(result.stdout)["total_rows"] == 3)
