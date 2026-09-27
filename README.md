@@ -9,6 +9,18 @@ The behavioral contract for an agent using this skill lives in
 [SKILL.md](SKILL.md) and [references/](references); this file is for a human
 maintaining the code.
 
+## Installation
+
+- **Use this repo as-is**: `git clone` it and open the folder in VS Code —
+  Copilot auto-discovers the skill via
+  [.github/skills/trend-visor/](.github/skills/trend-visor). Then
+  `cp .env.example .env` (fill in `TREND_VISOR_USER_AGENT`) and
+  `uv sync --locked --extra charts`.
+- **Add it to a different project**: run
+  [scripts/package-skill.sh](scripts/package-skill.sh) `<other-project>/.github/skills/trend-visor`
+  and commit the result there (this repo's own skill folder is symlinked, so
+  it can't just be copied as-is).
+
 ## Install and run tests
 
 ```
