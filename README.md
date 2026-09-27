@@ -58,48 +58,6 @@ Verification for passes combined:
   narrower date range. The accepted reports and charts from that run are kept
   in [evals/history/](evals/history/) as evidence, since the tooling that
   produced them (`tools/model_eval`) was removed in the simplification pass.
-  Mistakes the model actually made along the way — and how they were fixed —
-  are listed below rather than papered over:
-  - The model occasionally added prose text alongside a tool call instead of
-    only the tool call; the adapter now rejects that instead of guessing intent.
-  - The model sometimes serialized a numeric argument (e.g. a page offset) as
-    a quoted string; the schema and validation were tightened to reject that
-    rather than silently coerce it.
-  - A response was truncated mid-tool-call when the output token budget was
-    too small for a larger page of evidence; the fix was a larger reserved
-    budget and smaller result pages, not blindly retrying.
-- **A real 2-language run** ("compare growth of intermittent fasting interest
-  in Polish and Czech Wikipedia over the last two years", the task's own
-  example) on the free OpenRouter model `inclusionai/ling-3.0-flash-fin:free`
-  after the simplification, using the harness in
-  [evals/run_live.py](evals/run_live.py) over the real, current CLI. The
-  accepted report/chart are kept in
-  [evals/history/fasting-pl-cs-live/](evals/history/fasting-pl-cs-live/). This
-  is real data: `Q1666254` ("intermittent fasting") has no Polish Wikipedia
-  sitelink, and the model correctly stopped and asked instead of silently
-  substituting a different Polish article — exactly the behavior
-  [SKILL.md](SKILL.md) requires. It then correctly reported the Czech
-  article's descriptive numbers, including a `null` change because the
-  current period had 3 missing days (`incomplete_coverage`), and the chart
-  visibly shows the baseline mean was inflated by a few large single-day
-  spikes rather than sustained growth. Real problems this run surfaced:
-  - **A real code bug, fixed:** `report`'s default evidence page exceeded the
-    24000-byte cap for a single analyzed language, because the calendar
-    year-over-year comparison embedded every individual month-pair
-    (`calendar["pairs"]`) instead of just the summary counts actually used by
-    the report text. Fixed in `reports.py` to keep only `calendar["summary"]`
-    in evidence, with a regression test
-    (`test_a_two_year_study_still_fits_the_default_evidence_page`).
-  - **A free-model limitation, documented rather than fixed:** this specific
-    free reasoning model repeatedly exhausted its entire completion budget on
-    hidden reasoning tokens before writing any visible answer
-    (`finish_reason: "length"` with empty `content`), and separately got stuck
-    calling `analyze`/`chart` with the wrong path format five times in a row
-    without adapting. Capping the model's reasoning-token budget
-    (`"reasoning": {"max_tokens": 1024}`) and keeping the adapter instructions
-    ("keep reasoning brief") reduced but did not eliminate this; a stronger or
-    non-free model should be markedly more reliable here. This is a model
-    capability limit, not something the skill's CLI can paper over.
 
 ## Known limitations (by design, not oversight)
 
