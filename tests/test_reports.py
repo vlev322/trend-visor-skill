@@ -192,6 +192,14 @@ class ReportTests(unittest.TestCase):
                 self.assertTrue(Path(row["chart"]["path"]).is_file())
                 self.assertEqual(Path(row["chart"]["path"]).parent, chart_dir.resolve())
 
+    def test_chart_dir_without_matplotlib_fails_closed_instead_of_silently_skipping(self):
+        with TemporaryDirectory() as directory:
+            saved, _ = saved_study(Path(directory))
+            with patch("tools.pageviews.reports.find_spec", return_value=None):
+                with self.assertRaises(PageviewsError) as caught:
+                    build_report(saved.path, question="Порівняй", chart_dir=Path(directory) / "charts")
+            self.assertEqual(caught.exception.code, "missing_dependency")
+
     def test_a_two_year_study_still_fits_the_default_evidence_page(self):
         # Regression: the full per-month calendar breakdown used to be embedded
         # verbatim in evidence, pushing even a single language over the byte cap.

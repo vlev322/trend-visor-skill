@@ -2,8 +2,11 @@ import unittest
 from datetime import date, timedelta
 
 from tools.pageviews.analysis import (
+    MISSING_DATA_POLICY_ZERO_FILLED,
     Period,
     analyze_series,
+    analyze_series_zero_filled,
+    months_periods,
     summarize_months,
     summarize_period,
 )
@@ -19,6 +22,31 @@ def make_series(values, start=date(2026, 1, 1)):
             for offset, value in enumerate(values)
         )
     )
+
+
+class MonthsPeriodsTests(unittest.TestCase):
+    def test_twelve_months_compares_against_the_same_months_a_year_earlier(self):
+        baseline, current = months_periods(date(2026, 9, 27), 7, 12)
+        self.assertEqual(current, Period(date(2025, 9, 1), date(2026, 8, 31)))
+        self.assertEqual(baseline, Period(date(2024, 9, 1), date(2025, 8, 31)))
+
+    def test_three_months_still_ends_at_the_last_full_month_before_the_cutoff(self):
+        baseline, current = months_periods(date(2026, 9, 27), 7, 3)
+        self.assertEqual(current, Period(date(2026, 6, 1), date(2026, 8, 31)))
+        self.assertEqual(baseline, Period(date(2025, 6, 1), date(2025, 8, 31)))
+
+    def test_more_than_twelve_months_compares_against_the_immediately_preceding_period(self):
+        baseline, current = months_periods(date(2026, 9, 27), 7, 24)
+        self.assertEqual(current, Period(date(2024, 9, 1), date(2026, 8, 31)))
+        self.assertEqual(baseline, Period(date(2022, 9, 1), date(2024, 8, 31)))
+
+    def test_cutoff_on_a_month_end_uses_that_month_as_the_last_full_month(self):
+        _, current = months_periods(date(2026, 9, 8), 7, 1)
+        self.assertEqual(current, Period(date(2026, 8, 1), date(2026, 8, 31)))
+
+    def test_rejects_non_positive_months(self):
+        with self.assertRaises(PageviewsError):
+            months_periods(date(2026, 9, 27), 7, 0)
 
 
 class PeriodSummaryTests(unittest.TestCase):
@@ -248,3 +276,38 @@ class MonthlySummaryTests(unittest.TestCase):
         current = Period(date(2026, 1, 2), date(2026, 1, 2))
         result = analyze_series(make_series([100, 120]), baseline, current)
         self.assertNotIn("monthly", result)
+
+
+class AnalyzeSeriesZeroFilledTests(unittest.TestCase):
+    def test_days_the_api_omitted_count_as_zero_instead_of_blocking_the_change(self):
+        baseline = Period(date(2026, 1, 1), date(2026, 1, 2))
+        current = Period(date(2026, 1, 3), date(2026, 1, 4))
+        series = make_series([10, None, 30, 60])
+        result = analyze_series_zero_filled(series, baseline, current)
+        self.assertEqual(result["method"]["missing_data_policy"], MISSING_DATA_POLICY_ZERO_FILLED)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["baseline"]["mean_daily_views_observed"], 5.0)
+        self.assertEqual(result["baseline"]["coverage"]["missing_days"], 0)
+        self.assertEqual(result["baseline"]["coverage"]["assumed_zero_days"], 1)
+        self.assertEqual(result["baseline"]["coverage"]["explicit_zero_days"], 0)
+        self.assertEqual(result["comparison"]["status"], "computed")
+        self.assertEqual(result["comparison"]["change_percent"], 800.0)
+        # The original series passed in is not mutated.
+        self.assertIsNone(series.days[1].views)
+
+    def test_explicit_zeros_are_not_confused_with_assumed_zeros(self):
+        baseline = Period(date(2026, 1, 1), date(2026, 1, 2))
+        current = Period(date(2026, 1, 3), date(2026, 1, 4))
+        result = analyze_series_zero_filled(make_series([0, 0, 10, 20]), baseline, current)
+        self.assertEqual(result["baseline"]["coverage"]["explicit_zero_days"], 2)
+        self.assertEqual(result["baseline"]["coverage"]["assumed_zero_days"], 0)
+        self.assertEqual(result["comparison"]["reason"], "zero_baseline")
+
+    def test_a_snapshot_with_no_explicit_rows_anywhere_is_not_silently_filled(self):
+        baseline = Period(date(2026, 1, 1), date(2026, 1, 1))
+        current = Period(date(2026, 1, 2), date(2026, 1, 2))
+        result = analyze_series_zero_filled(make_series([None, None]), baseline, current)
+        self.assertEqual(result["status"], "no_observations")
+        self.assertIsNone(result["comparison"]["change_percent"])
+        self.assertEqual(result["comparison"]["reason"], "incomplete_coverage")
+        self.assertNotEqual(result["method"]["missing_data_policy"], MISSING_DATA_POLICY_ZERO_FILLED)

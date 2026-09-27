@@ -1,5 +1,6 @@
 import json
 import math
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,12 +9,12 @@ from .analysis import Period, analyze_series_zero_filled, validate_period_order
 from .client import fetch_response, validate_user_agent
 from .errors import PageviewsError
 from .models import EARLIEST_DATE, PageviewsRequest, build_request, parse_date
-from .resolutions import ResolutionPlan
+from .resolutions import ResolutionPlan, ResolutionTarget
 from .storage import Snapshot, load_snapshot, read_snapshot, save_snapshot
 from .validation import ValidatedSeries, validate_response
 
-STUDY_VERSION = 1
-DERIVED_STUDY_VERSION = 2
+STUDY_VERSION = 3
+DERIVED_STUDY_VERSION = 4
 
 
 def _validate_window(baseline: Period, current: Period, as_of: str, lag_days: int) -> None:
@@ -127,8 +128,34 @@ CAVEATS = [
 ]
 
 
+def _merge_targets(
+    plans: Sequence[ResolutionPlan],
+) -> list[tuple[ResolutionTarget, ResolutionPlan]]:
+    """Combine targets from one or more --resolution files (e.g. one Wikidata item
+    per language when a topic has no single cross-language item), keeping first-seen
+    language order. A language matched in more than one file is rejected rather than
+    silently picking one; an unmatched language is replaced by a later matched one."""
+    order: list[str] = []
+    chosen: dict[str, tuple[ResolutionTarget, ResolutionPlan]] = {}
+    for plan in plans:
+        for target in plan.targets:
+            if target.language not in chosen:
+                order.append(target.language)
+                chosen[target.language] = (target, plan)
+                continue
+            existing_target, _ = chosen[target.language]
+            if existing_target.status == "matched" and target.status == "matched":
+                raise PageviewsError(
+                    "invalid_request",
+                    f"Language {target.language!r} is matched in more than one --resolution file.",
+                )
+            if target.status == "matched":
+                chosen[target.language] = (target, plan)
+    return [chosen[language] for language in order]
+
+
 def run_study(
-    plan: ResolutionPlan,
+    plans: ResolutionPlan | Sequence[ResolutionPlan],
     baseline: Period,
     current: Period,
     *,
@@ -141,6 +168,9 @@ def run_study(
     refresh: bool = False,
     include_monthly: bool = False,
 ) -> dict[str, object]:
+    plans = (plans,) if isinstance(plans, ResolutionPlan) else tuple(plans)
+    if not plans:
+        raise PageviewsError("invalid_request", "At least one --resolution is required.")
     _validate_window(baseline, current, as_of, lag_days)
     if offline and refresh:
         raise PageviewsError("invalid_request", "offline and refresh cannot be combined.")
@@ -149,19 +179,21 @@ def run_study(
     if not offline and user_agent is None:
         raise PageviewsError("invalid_request", "user_agent is required unless offline mode is enabled.")
     user_agent = "" if offline else validate_user_agent(user_agent or "")
+    merged = _merge_targets(plans)
     requests = {
         target.language: build_request(
             project=target.project, article=target.article,
             start=baseline.start.isoformat(), end=current.end.isoformat(),
             as_of=as_of, lag_days=lag_days,
         )
-        for target in plan.targets if target.status == "matched"
+        for target, _ in merged if target.status == "matched"
     }
     results = []
     blocked_by = None
-    for target in plan.targets:
+    for target, plan in merged:
         row: dict[str, object] = {
             "language": target.language, "project": target.project, "article": target.article,
+            "entity_id": plan.entity["entity_id"], "entity_label": plan.entity.get("label"),
             "resolution_status": target.status, "mapping": target.record,
             "status": "not_collected", "reason": target.status,
         }
@@ -198,10 +230,11 @@ def run_study(
         "schema_version": SCHEMA_VERSION, "study_version": STUDY_VERSION,
         "operation": "study", "status": status,
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "resolution": {
-            "path": str(plan.path), "sha256": plan.sha256, "entity": plan.entity,
-            "sources": plan.result["sources"],
-        },
+        "resolutions": [
+            {"path": str(plan.path), "sha256": plan.sha256, "entity": plan.entity,
+             "sources": plan.result["sources"]}
+            for plan in plans
+        ],
         "periods": {
             "baseline": {"start": baseline.start.isoformat(), "end": baseline.end.isoformat()},
             "current": {"start": current.start.isoformat(), "end": current.end.isoformat()},
@@ -292,7 +325,7 @@ def derive_study(
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "mode": "pinned_snapshot_reuse",
         "source_study": {"path": str(path)},
-        "resolution": parent["resolution"],
+        "resolutions": parent["resolutions"],
         "periods": {
             "baseline": {"start": baseline.start.isoformat(), "end": baseline.end.isoformat()},
             "current": {"start": current.start.isoformat(), "end": current.end.isoformat()},

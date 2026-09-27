@@ -156,6 +156,40 @@ def validate_period_order(baseline_period: Period, current_period: Period) -> No
         )
 
 
+def _shift_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
+    index = year * 12 + (month - 1) + delta_months
+    return index // 12, index % 12 + 1
+
+
+def months_periods(as_of: date, lag_days: int, months: int) -> tuple[Period, Period]:
+    """Align --months N to full calendar months ending at the safety cutoff.
+    N<=12 compares against the same N months a year earlier; N>12 compares
+    against the previous N months (no earlier-year data would exist for both)."""
+    if type(months) is not int or months < 1:
+        raise PageviewsError("invalid_request", "months must be a positive integer.")
+    if type(lag_days) is not int or lag_days < 0:
+        raise PageviewsError("invalid_request", "lag_days must be a nonnegative integer.")
+    cutoff = as_of - timedelta(days=lag_days + 1)
+    if cutoff.day == monthrange(cutoff.year, cutoff.month)[1]:
+        end_year, end_month = cutoff.year, cutoff.month
+    else:
+        end_year, end_month = _shift_month(cutoff.year, cutoff.month, -1)
+    current_end = date(end_year, end_month, monthrange(end_year, end_month)[1])
+    start_year, start_month = _shift_month(end_year, end_month, -(months - 1))
+    current = Period(date(start_year, start_month, 1), current_end)
+    if months <= 12:
+        baseline_start = date(current.start.year - 1, current.start.month, 1)
+        baseline_end_year = current_end.year - 1
+        baseline = Period(
+            baseline_start,
+            date(baseline_end_year, current_end.month, monthrange(baseline_end_year, current_end.month)[1]),
+        )
+    else:
+        b_start_year, b_start_month = _shift_month(current.start.year, current.start.month, -months)
+        baseline = Period(date(b_start_year, b_start_month, 1), current.start - timedelta(days=1))
+    return baseline, current
+
+
 def analyze_series(
     series: ValidatedSeries,
     baseline_period: Period,

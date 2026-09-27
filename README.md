@@ -96,11 +96,24 @@ Verification for both passes combined:
   trend fit; it was removed because a plain year-over-year calendar
   comparison plus spike sensitivity answers "how much should I trust this
   change" more legibly for a small model and a non-technical reader.
-- One topic maps to one Wikidata item resolved per language; there is no
-  automatic merging of multiple articles or redirects/renames history.
-- One-page PDF export (`report --pdf`) supports at most 3 languages and a
+- A topic can now map to one Wikidata item **per language** (`study` accepts
+  a repeated `--resolution`, merged by language), for the common case where a
+  topic has no single cross-language item (e.g. `no_sitelink`). There is
+  still no automatic merging of multiple articles for the *same* language, or
+  of redirects/renames history.
+- One-page PDF export (`report --pdf`) supports at most 6 languages and a
   bounded amount of text; it refuses instead of dropping/overlapping content
-  when a report doesn't fit. Larger studies use the Markdown report instead.
+  when a report doesn't fit (the chart shrinks first). Larger studies use the
+  Markdown report instead. The PDF always draws its own vector overview chart
+  from the pinned snapshots (monthly means; indexed to baseline = 100 when
+  several languages are compared), so it no longer depends on `--chart-dir`.
+- Wikimedia's per-article API omits zero-view days entirely rather than
+  returning `views: 0` (verified directly against the live API for this
+  project: a single-day request for a known zero-view day returns HTTP 404,
+  and a multi-day request silently skips that date). `study`/`report` count
+  every such day as an observed 0 (`assumed_zero_days`); an earlier version
+  of this codebase treated it as unknown and blocked the whole comparison,
+  which was wrong for the common case of a low-traffic article or language.
 
 ## Roadmap
 
@@ -113,10 +126,8 @@ Rough order, each a self-contained increment:
 2. **Redirects and page-move history.** A topic's pageviews can be split
    across an old and a new title; detect and optionally combine them instead
    of only following the current sitelink.
-3. **Multiple articles per topic per language**, for topics that don't map
-   to one Wikidata item cleanly (e.g. a course topic spanning several
-   articles), with an explicit, reviewable combination rule rather than a
-   silent sum.
+3. **Multi-page PDF** for studies with more than 6 languages, reusing the
+   same overview chart and key-metrics table.
 4. **Batch collection for many languages** (30–50+) with progress reporting
    and partial-failure handling, instead of one request per language inline.
 5. **An explicit, opt-in trend model** (e.g. Theil–Sen on monthly means)

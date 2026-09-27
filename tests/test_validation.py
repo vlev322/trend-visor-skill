@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 from tests.helpers import encode_items, make_item, make_request
 from tools.pageviews.errors import PageviewsError
-from tools.pageviews.validation import validate_response
+from tools.pageviews.validation import fill_missing_as_zero, validate_response
 
 
 class ValidationTests(unittest.TestCase):
@@ -42,6 +42,15 @@ class ValidationTests(unittest.TestCase):
         series = validate_response(encode_items(), make_request())
         self.assertEqual(series.status, "no_observations")
         self.assertTrue(all(day.views is None for day in series.days))
+
+    def test_fill_missing_as_zero_replaces_only_omitted_days(self):
+        body = encode_items(make_item("2026071200", 10), make_item("2026071400", 0))
+        series = validate_response(body, make_request())
+        filled = fill_missing_as_zero(series)
+        self.assertEqual([day.views for day in filled.days], [10, 0, 0])
+        self.assertEqual(filled.status, "complete")
+        # The original series is unchanged; only the returned copy is filled.
+        self.assertEqual([day.views for day in series.days], [10, None, 0])
 
     def test_limits_missing_date_preview_but_preserves_full_calendar(self):
         request = make_request(start="2026-07-01", end="2026-07-31")

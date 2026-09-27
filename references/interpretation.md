@@ -8,7 +8,7 @@ formulas, status meanings, or want to double-check a claim before writing it.
 | Status | Meaning |
 | --- | --- |
 | `matched` | An article links directly to the Wikidata item with no redirect/disambiguation issue. |
-| `no_sitelink` | This wiki has no linked article. Not proof of no interest — keep the language visible, ask before dropping it. |
+| `no_sitelink` | This wiki has no linked article. Not proof of no interest. Keep the language visible, and ask before dropping it; you can also `search --language <that language>` and, if a fitting item exists, `resolve` it for just that language and pass **both** saved resolution files to `study --resolution A --resolution B` (repeat the flag; do not run two separate studies). |
 | `needs_review` | Redirect, disambiguation, or an identity mismatch. Inspect `issues`/`redirects` before using it. |
 | `page_missing` / `unsupported_language` / `unavailable_project` | The title, language code, or wiki is not usable as queried. |
 | `check_failed` / `not_checked` | A request failed or was skipped after an earlier failure; not evidence about the topic. |
@@ -21,15 +21,36 @@ formulas, status meanings, or want to double-check a claim before writing it.
 | `not_collected` | Resolution was not `matched`; see the original resolve status. |
 | `collection_failed` | A fetch or cache read failed; the error code is preserved. |
 
-`comparison.status: computed` requires full coverage in both periods and a
-positive baseline mean; otherwise it is `not_computed` with a `reason`
-(`incomplete_coverage` or `zero_baseline`). A missing day is `views: null`,
-never `0`. An observed `0` is a real recorded zero.
+Wikimedia's per-article API **omits days with zero views** instead of
+returning `views: 0` (confirmed directly against the live API: a single-day
+request for a zero-view day returns HTTP 404, and a multi-day request silently
+skips that date). `study` and `report` therefore count every day the API did
+not report as an observed 0 (`coverage.assumed_zero_days`), and a true API
+`views: 0` row is kept separately as `coverage.explicit_zero_days`. The
+exception: if a snapshot has **no explicit row anywhere** in its collected
+window, that is treated as too suspicious to assume real zero traffic (e.g. a
+mismatched or unpublished title), and the comparison stays `not_computed`
+(`incomplete_coverage`) instead of being silently zero-filled.
+
+`comparison.status: computed` requires a positive baseline mean; otherwise it
+is `not_computed` with a `reason` (`zero_baseline`, or `incomplete_coverage`
+only for that no-data-anywhere case above).
 
 `change_percent = 100 × (current_mean − baseline_mean) / baseline_mean`, using
-daily means over **observed** days in each period. It answers "how did this one
-article's average daily views change between these two exact periods", nothing
-about unique visitors, purchase intent, or a country's population.
+daily means over **every day in each period** (explicit rows plus assumed
+zeros). It answers "how did this one article's average daily views change
+between these two exact periods", nothing about unique visitors, purchase
+intent, or a country's population — and nothing about the rest of the language
+edition's traffic, which can rise or fall for unrelated reasons.
+
+### `--months N` period alignment
+
+Instead of four explicit dates, `study --months N` aligns to full calendar
+months ending at the safety cutoff (`--as-of` minus `--lag-days` minus one
+day). For `N<=12` the baseline is the same N months one year earlier; for
+`N>12` the baseline is the N months immediately before the current period
+(there usually isn't a full extra year of history to compare against). This
+cannot be combined with the four explicit date flags or with `--from-study`.
 
 ## What `report` computes for every analyzed language
 
@@ -59,6 +80,7 @@ about unique visitors, purchase intent, or a country's population.
 | "Excluding the 3 biggest days changes the result to M%" | "The spike was caused by X" — the data does not say why a day was large |
 | "Language Y has more/less relative growth than language Z" | "Language Y is a better market" — views ≠ audience size, purchase intent, or population; different wikis are not normalized against each other |
 | "No article was found for language Y" | Substituting a broader/related article for Y without the user's explicit approval |
+| "N days in this window had no reported traffic (counted as 0)" | Treating `assumed_zero_days` as a data-quality problem to be excluded or apologized for — it is Wikimedia's normal reporting behavior |
 
 A follow-up rules file, ranking formula, or "confidence score" is out of scope:
 apply the user's own stated `--criterion` text using your own judgment against

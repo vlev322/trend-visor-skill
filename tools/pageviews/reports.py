@@ -118,7 +118,9 @@ def _analyze_row(row: dict, baseline: Period, current: Period, *, chart_dir: Pat
     calendar_summary = {key: calendar[key] for key in ("method", "status", "summary")}
     evidence.update(analysis=analysis, calendar=calendar_summary, diagnostics=diagnostics,
                     source=snapshot.response.source_metadata())
-    if chart_dir is not None and find_spec("matplotlib") is not None:
+    if chart_dir is not None:
+        if find_spec("matplotlib") is None:
+            raise PageviewsError("missing_dependency", "Install the charts extra before requesting --chart-dir.")
         from .charts import ChartSource, prepare_chart_data, render_png, save_png
 
         periods = prepare_chart_data(series, baseline, current)

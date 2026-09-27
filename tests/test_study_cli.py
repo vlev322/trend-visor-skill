@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import os
@@ -44,20 +43,25 @@ class StudyCliTests(unittest.TestCase):
             code = main(self.arguments + list(extra))
         return code, json.loads(output.getvalue())
 
+    def full(self, result):
+        return json.loads(Path(result["artifacts"]["study"]).read_text())
+
     def select_languages(self, languages, unmatched=()):
         self.saved = save_resolution(
             resolution_result(languages, unmatched), self.root / "selected.json"
         )
-        self.arguments.extend(["--resolution", str(self.saved.path)])
+        index = self.arguments.index("--resolution")
+        self.arguments[index:index + 2] = ["--resolution", str(self.saved.path)]
 
     @patch("tools.pageviews.client.urlopen")
     def test_collects_only_matches_and_reuses_snapshots_offline(self, opener):
         opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
-        code, first = self.invoke(
+        code, compact_first = self.invoke(
             "--user-agent", "study-tests/1 (offline fixture)",
             "--output", str(self.root / "first.json"),
         )
         self.assertEqual(code, 0)
+        first = self.full(compact_first)
         self.assertEqual(first["status"], "partial")
         rows = first["results"]
         self.assertEqual([row["language"] for row in rows], ["cs", "pl"])
@@ -74,8 +78,9 @@ class StudyCliTests(unittest.TestCase):
             if path.is_file()
         }
         opener.side_effect = AssertionError("Offline study must not use HTTP")
-        code, second = self.invoke("--offline", "--output", str(self.root / "second.json"))
+        code, compact_second = self.invoke("--offline", "--output", str(self.root / "second.json"))
         self.assertEqual(code, 0)
+        second = self.full(compact_second)
         self.assertTrue(second["results"][0]["cache_hit"])
         self.assertEqual(rows[0]["artifacts"], second["results"][0]["artifacts"])
         self.assertEqual(rows[0]["analysis"], second["results"][0]["analysis"])
@@ -85,10 +90,10 @@ class StudyCliTests(unittest.TestCase):
         )
         saved = json.loads((self.root / "second.json").read_text())
         self.assertEqual(saved["results"], second["results"])
-        self.assertEqual(saved["resolution"]["sha256"], self.saved.sha256)
+        self.assertEqual(saved["resolutions"][0]["sha256"], self.saved.sha256)
         self.assertEqual(
-            second["artifacts"]["study_sha256"],
-            hashlib.sha256((self.root / "second.json").read_bytes()).hexdigest(),
+            compact_second["artifacts"]["study"],
+            str((self.root / "second.json").resolve()),
         )
 
     @patch("tools.pageviews.client.urlopen")
@@ -98,10 +103,11 @@ class StudyCliTests(unittest.TestCase):
             pageviews_http_response("pl", (100, 200, 200, 400)),
             pageviews_http_response("cs", (10, 20, 30, 60)),
         ]
-        code, result = self.invoke(
+        code, compact = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "comparison.json"),
         )
         self.assertEqual(code, 0)
+        result = self.full(compact)
         comparison = result["comparison"]
         self.assertEqual(comparison["status"], "available")
         self.assertEqual(comparison["eligible_languages"], ["pl", "cs"])
@@ -125,10 +131,11 @@ class StudyCliTests(unittest.TestCase):
             pageviews_http_response("pl", (0, 0, 10, 20)),
             pageviews_http_response("en", (20, 20, 10, 10)),
         ]
-        code, result = self.invoke(
+        code, compact = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "partial.json"),
         )
         self.assertEqual(code, 0)
+        result = self.full(compact)
         self.assertEqual(result["status"], "complete")
         comparison = result["comparison"]
         self.assertEqual(comparison["status"], "available")
@@ -146,10 +153,11 @@ class StudyCliTests(unittest.TestCase):
     @patch("tools.pageviews.client.urlopen")
     def test_empty_series_is_unknown_instead_of_a_zero_series(self, opener):
         opener.return_value = pageviews_http_response("cs", (None, None, None, None))
-        code, result = self.invoke(
+        code, compact = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "empty.json"),
         )
         self.assertEqual(code, 0)
+        result = self.full(compact)
         analysis = result["results"][0]["analysis"]
         self.assertEqual(analysis["status"], "no_observations")
         self.assertIsNone(analysis["current"]["sum_observed_views"])
@@ -160,11 +168,12 @@ class StudyCliTests(unittest.TestCase):
     def test_gap_outside_selected_periods_does_not_make_them_incomplete(self, opener):
         self.select_languages(("cs",))
         opener.return_value = pageviews_http_response("cs", (10, None, 30, 60))
-        code, result = self.invoke(
+        code, compact = self.invoke(
             "--baseline-end", "2026-07-01", "--user-agent", "study-tests/1",
             "--output", str(self.root / "gap.json"),
         )
         self.assertEqual(code, 0)
+        result = self.full(compact)
         self.assertEqual(result["status"], "complete")
         row = result["results"][0]
         self.assertEqual(row["coverage"]["missing_days"], 1)
@@ -174,8 +183,9 @@ class StudyCliTests(unittest.TestCase):
 
     @patch("tools.pageviews.client.urlopen")
     def test_offline_cache_miss_still_saves_all_language_outcomes(self, opener):
-        code, result = self.invoke("--offline", "--output", str(self.root / "offline.json"))
+        code, compact = self.invoke("--offline", "--output", str(self.root / "offline.json"))
         self.assertEqual(code, 1)
+        result = self.full(compact)
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual([row["reason"] for row in result["results"]], ["cache_miss", "no_sitelink"])
         self.assertTrue((self.root / "offline.json").is_file())
@@ -185,24 +195,27 @@ class StudyCliTests(unittest.TestCase):
     @patch("tools.pageviews.client.urlopen")
     def test_related_periods_can_reuse_same_outer_window_but_as_of_changes_cache_key(self, opener):
         opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
-        code, first = self.invoke(
+        code, compact_first = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "first.json"),
         )
         self.assertEqual(code, 0)
+        first = self.full(compact_first)
         opener.side_effect = AssertionError("Related offline requests must not use HTTP")
-        code, related = self.invoke(
+        code, compact_related = self.invoke(
             "--offline", "--baseline-end", "2026-07-01", "--monthly",
             "--output", str(self.root / "related.json"),
         )
         self.assertEqual(code, 0)
+        related = self.full(compact_related)
         row = related["results"][0]
         self.assertEqual(row["snapshot"], first["results"][0]["snapshot"])
         self.assertEqual(row["analysis"]["comparison"]["change_percent"], 350.0)
         self.assertTrue(row["analysis"]["monthly"]["baseline"][0]["partial_calendar_month"])
-        code, changed = self.invoke(
+        code, compact_changed = self.invoke(
             "--offline", "--as-of", "2026-09-26", "--output", str(self.root / "changed.json"),
         )
         self.assertEqual(code, 1)
+        changed = self.full(compact_changed)
         self.assertEqual(changed["results"][0]["reason"], "cache_miss")
         opener.assert_called_once()
 
@@ -210,11 +223,12 @@ class StudyCliTests(unittest.TestCase):
     def test_reframes_pinned_study_offline_and_report_verifies_broader_snapshot(self, opener):
         self.select_languages(("cs",))
         opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
-        code, original = self.invoke(
+        code, compact_original = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "original.json"),
         )
-        self.assertEqual(code, 0, original)
-        original_path = Path(original["artifacts"]["study"])
+        self.assertEqual(code, 0, compact_original)
+        original = self.full(compact_original)
+        original_path = Path(compact_original["artifacts"]["study"])
         original_bytes = original_path.read_bytes()
 
         output = io.StringIO()
@@ -225,8 +239,9 @@ class StudyCliTests(unittest.TestCase):
                 "--current-start", "2026-07-03", "--current-end", "2026-07-03",
                 "--output", str(self.root / "derived.json"),
             ])
-        derived = json.loads(output.getvalue())
-        self.assertEqual(code, 0, derived)
+        compact_derived = json.loads(output.getvalue())
+        self.assertEqual(code, 0, compact_derived)
+        derived = self.full(compact_derived)
         self.assertEqual(derived["mode"], "pinned_snapshot_reuse")
         self.assertEqual(derived["periods"]["baseline"], {"start": "2026-07-02", "end": "2026-07-02"})
         row = derived["results"][0]
@@ -238,14 +253,14 @@ class StudyCliTests(unittest.TestCase):
         self.assertEqual(opener.call_count, 1)
 
         report = build_report(
-            Path(derived["artifacts"]["study"]),
+            Path(compact_derived["artifacts"]["study"]),
             question="Чи змінилися перегляди у вибраних підперіодах?",
         )
         self.assertEqual(report["periods"]["baseline"], {"start": "2026-07-02", "end": "2026-07-02"})
         self.assertEqual(report["evidence"][0]["analysis"]["comparison"]["change_percent"], 50.0)
         self.assertEqual(report["status"], "completed")
 
-        malformed = json.loads(Path(derived["artifacts"]["study"]).read_text())
+        malformed = json.loads(Path(compact_derived["artifacts"]["study"]).read_text())
         del malformed["operation"]
         malformed_ref = save_json_artifact(malformed, self.root / "malformed-derived.json")
         with self.assertRaises(PageviewsError) as caught:
@@ -282,17 +297,19 @@ class StudyCliTests(unittest.TestCase):
             pageviews_http_response("cs", (10, 20, 30, 60)),
             pageviews_http_response("cs", (10, 20, 40, 80)),
         ]
-        code, first = self.invoke(
+        code, compact_first = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "first.json"),
         )
         self.assertEqual(code, 0)
+        first = self.full(compact_first)
         old = Path(first["results"][0]["artifacts"]["raw"])
         before = old.read_bytes()
-        code, refreshed = self.invoke(
+        code, compact_refreshed = self.invoke(
             "--refresh", "--user-agent", "study-tests/1",
             "--output", str(self.root / "refreshed.json"),
         )
         self.assertEqual(code, 0)
+        refreshed = self.full(compact_refreshed)
         row = refreshed["results"][0]
         self.assertFalse(row["cache_hit"])
         self.assertNotEqual(row["snapshot"], first["results"][0]["snapshot"])
@@ -300,10 +317,11 @@ class StudyCliTests(unittest.TestCase):
         self.assertEqual(old.read_bytes(), before)
         self.assertEqual(opener.call_count, 2)
 
-        code, latest = self.invoke(
+        code, compact_latest = self.invoke(
             "--offline", "--output", str(self.root / "latest.json"),
         )
         self.assertEqual(code, 0)
+        latest = self.full(compact_latest)
         self.assertTrue(latest["results"][0]["cache_hit"])
         self.assertEqual(latest["results"][0]["snapshot"], row["snapshot"])
         self.assertEqual(latest["results"][0]["analysis"]["comparison"]["change_percent"], 300.0)
@@ -318,15 +336,17 @@ class StudyCliTests(unittest.TestCase):
     @patch("tools.pageviews.client.urlopen")
     def test_corrupt_cache_is_not_silently_refetched(self, opener):
         opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
-        code, first = self.invoke(
+        code, compact_first = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "first.json"),
         )
         self.assertEqual(code, 0)
+        first = self.full(compact_first)
         Path(first["results"][0]["artifacts"]["raw"]).write_bytes(b"damaged fixture")
-        code, second = self.invoke(
+        code, compact_second = self.invoke(
             "--user-agent", "study-tests/1", "--output", str(self.root / "second.json"),
         )
         self.assertEqual(code, 1)
+        second = self.full(compact_second)
         self.assertEqual(second["results"][0]["reason"], "cache_error")
         opener.assert_called_once()
 
@@ -345,10 +365,11 @@ class StudyCliTests(unittest.TestCase):
                 opener.side_effect = HTTPError(
                     "https://wikimedia.org/fixture", status, "Test limit", {"Retry-After": "60"}, None,
                 )
-                code, result = self.invoke(
+                code, compact = self.invoke(
                     "--user-agent", "study-tests/1", "--output", str(self.root / f"limit-{status}.json"),
                 )
                 self.assertEqual(code, 1)
+                result = self.full(compact)
                 first, cached, stopped = result["results"]
                 self.assertEqual(first["error"]["details"]["http_status"], status)
                 self.assertEqual(first["error"]["details"]["retry_after"], "60")
@@ -368,11 +389,12 @@ class StudyCliTests(unittest.TestCase):
             with self.subTest(name=name):
                 opener.reset_mock()
                 opener.side_effect = [failure, pageviews_http_response("pl", (10, 20, 30, 60))]
-                code, result = self.invoke(
+                code, compact = self.invoke(
                     "--user-agent", "study-tests/1", "--cache-dir", str(self.root / name),
                     "--output", str(self.root / f"{name}.json"),
                 )
                 self.assertEqual(code, 1)
+                result = self.full(compact)
                 self.assertEqual(result["status"], "partial")
                 self.assertEqual(result["results"][0]["reason"], reason)
                 self.assertNotIn("analysis", result["results"][0])
@@ -428,10 +450,70 @@ class StudyCliTests(unittest.TestCase):
         opener.assert_called_once()
 
     @patch("tools.pageviews.client.urlopen")
+    def test_multiple_resolution_files_are_merged_by_language(self, opener):
+        first = save_resolution(resolution_result(("cs", "pl"), unmatched=("pl",)), self.root / "first-res.json")
+        second = save_resolution(resolution_result(("pl",), unmatched=()), self.root / "second-res.json")
+        opener.side_effect = [
+            pageviews_http_response("cs", (10, 20, 30, 60)),
+            pageviews_http_response("pl", (100, 200, 200, 400)),
+        ]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--resolution", str(first.path), "--resolution", str(second.path),
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "merged.json"),
+            ])
+        compact = json.loads(output.getvalue())
+        self.assertEqual(code, 0, compact)
+        result = self.full(compact)
+        self.assertEqual([row["language"] for row in result["results"]], ["cs", "pl"])
+        self.assertEqual([row["status"] for row in result["results"]], ["analyzed", "analyzed"])
+        self.assertEqual(len(result["resolutions"]), 2)
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_a_language_matched_in_two_resolution_files_is_rejected(self, opener):
+        first = save_resolution(resolution_result(("cs",), unmatched=()), self.root / "first-res.json")
+        second = save_resolution(resolution_result(("cs",), unmatched=()), self.root / "second-res.json")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--resolution", str(first.path), "--resolution", str(second.path),
+                "--baseline-start", "2026-07-01", "--baseline-end", "2026-07-02",
+                "--current-start", "2026-07-03", "--current-end", "2026-07-04",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "conflict.json"),
+            ])
+        error = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(error["error"]["code"], "invalid_request")
+        self.assertFalse((self.root / "conflict.json").exists())
+        opener.assert_not_called()
+
+    @patch("tools.pageviews.client.urlopen")
+    def test_months_aligns_periods_to_full_calendar_months(self, opener):
+        self.select_languages(("cs",))
+        opener.return_value = pageviews_http_response("cs", (10, 20, 30, 60))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main([
+                "study", "--resolution", str(self.saved.path), "--months", "3",
+                "--as-of", "2026-09-25", "--cache-dir", str(self.root / "cache"),
+                "--user-agent", "study-tests/1", "--output", str(self.root / "months.json"),
+            ])
+        compact = json.loads(output.getvalue())
+        self.assertEqual(code, 0, compact)
+        self.assertEqual(compact["periods"]["current"], {"start": "2026-06-01", "end": "2026-08-31"})
+        self.assertEqual(compact["periods"]["baseline"], {"start": "2025-06-01", "end": "2025-08-31"})
+
+    @patch("tools.pageviews.client.urlopen")
     def test_unresolved_topic_is_reported_without_pageview_requests(self, opener):
         self.select_languages(("cs", "pl"), unmatched=("cs", "pl"))
-        code, result = self.invoke("--offline", "--output", str(self.root / "unresolved.json"))
+        code, compact = self.invoke("--offline", "--output", str(self.root / "unresolved.json"))
         self.assertEqual(code, 0)
+        result = self.full(compact)
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(len(result["results"]), 2)
         self.assertEqual(result["comparison"]["eligible_languages"], [])

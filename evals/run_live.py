@@ -3,12 +3,13 @@
 skill itself and not imported by tests.
 
 Usage:
-    python3 evals/run_live.py <scenario>                       # start fresh
-    python3 evals/run_live.py --resume <transcript.json> --reply "<text>"
+    .venv/bin/python evals/run_live.py <scenario>              # start fresh
+    .venv/bin/python evals/run_live.py --resume <transcript.json> --reply "<text>"
 
 The run stops (without asking anything interactively) whenever the model asks
 a question instead of calling the tool, or when it hits the token budget.
-Inspect the printed message, then continue with --resume/--reply.
+Inspect the printed message, then continue with --resume/--reply. A transcript
+is always saved, including on a network/subprocess failure.
 """
 import json
 import os
@@ -20,11 +21,19 @@ from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTHON = str(ROOT / ".venv" / "bin" / "python") if (ROOT / ".venv" / "bin" / "python").is_file() else sys.executable
 ENV_PREFIX = "TREND_VISOR_LLM_"
-ALLOWED_COMMANDS = ("search", "resolve", "study", "analyze", "chart", "report")
+USER_AGENT_VAR = "TREND_VISOR_USER_AGENT"
+ALLOWED_COMMANDS = ("search", "resolve", "study", "report")
+PATH_ARGUMENT_FLAGS = {
+    "--output", "--resolution", "--cache-dir", "--from-study",
+    "--study", "--markdown", "--chart-dir", "--pdf", "--output-dir",
+}
+ASSETS_ROOT = (ROOT / "assets").resolve()
 MAX_TOOL_OUTPUT_CHARS = 6000
 MAX_TOKENS = 4096
-REASONING_TOKEN_CAP = 1024
+# Leaves room for visible output even if the model doesn't cap its own reasoning.
+DEFAULT_REASONING_TOKENS = 1024
 
 SCENARIOS = {
     "fasting-pl-cs": (
@@ -36,18 +45,28 @@ SCENARIOS = {
         "Чи зростає інтерес до цієї теми в україномовній Wikipedia, і наскільки "
         "цьому зростанню можна довіряти?"
     ),
+    "language-learning": (
+        "Ми створюємо застосунок для вивчення мов. Порівняй інтерес до вивчення "
+        "англійської у вибраних нами мовних розділах та підготуй короткий звіт: "
+        "які аудиторії варто дослідити наступними й чому?"
+    ),
+    "war-nowadays" : (
+        "Чи зростає інтерес до теми війни в сучасному світі в україномовній Wikipedia?"
+        "Цікавить динаміка переглядів сторінок на цю тему за період з 2021 року по 2023 рік."
+    )
 }
 
 ADAPTER_NOTE = (
     "You are an AI agent equipped with the trend-visor skill described below. "
     "You have exactly one tool, `pageviews`, which runs one CLI subcommand per "
-    "call: {\"command\": one of search/resolve/study/analyze/chart/report, "
+    "call: {\"command\": one of search/resolve/study/report, "
     "\"args\": [\"--flag\", \"value\", ...]}. Use only flags documented in the "
     "skill text; never invent a Wikidata ID. A descriptive User-Agent is applied "
     "automatically; you do not need to pass --user-agent yourself. Keep reasoning "
     "brief. When you need the user's explicit yes/no before collecting pageviews, "
-    "or to ask which candidate matches, do not call the tool — send a short "
-    "normal assistant message in Ukrainian instead and stop."
+    "or to ask which candidate matches, or which language editions to use, do not "
+    "call the tool — send a short normal assistant message in Ukrainian instead "
+    "and stop."
 )
 
 TOOL_SCHEMA = [{
@@ -93,7 +112,18 @@ def load_config(env_file: Path) -> tuple[str, str, str]:
             f"Set {ENV_PREFIX}BASE_URL, {ENV_PREFIX}MODEL and {ENV_PREFIX}API_KEY "
             f"in {env_file} or the environment."
         )
+    user_agent = os.environ.get(USER_AGENT_VAR, file_values.get(USER_AGENT_VAR))
+    if not user_agent or "no contact" in user_agent.lower():
+        raise SystemExit(
+            f"Set {USER_AGENT_VAR} in {env_file} or the environment to a descriptive "
+            "User-Agent with your real contact info before making real Wikimedia requests."
+        )
+    os.environ[USER_AGENT_VAR] = user_agent
     return base_url.rstrip("/"), model, api_key
+
+
+class ModelRequestError(RuntimeError):
+    """The model endpoint could not be reached or returned an error response."""
 
 
 def call_model(base_url: str, api_key: str, body: dict) -> dict:
@@ -107,7 +137,18 @@ def call_model(base_url: str, api_key: str, body: dict) -> dict:
         with urllib.request.urlopen(request, timeout=90) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
-        raise SystemExit(f"Model request failed: HTTP {error.code} {error.read().decode(errors='replace')[:2000]}")
+        raise ModelRequestError(f"HTTP {error.code}: {error.read().decode(errors='replace')[:2000]}") from error
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        raise ModelRequestError(f"{type(error).__name__}: {error}") from error
+
+
+def _rejected_path_argument(value: str) -> str | None:
+    try:
+        candidate = (ROOT / value).resolve() if not Path(value).is_absolute() else Path(value).resolve()
+        candidate.relative_to(ASSETS_ROOT)
+    except (OSError, ValueError):
+        return f"Path argument must resolve inside assets/: {value!r}"
+    return None
 
 
 def run_tool(command: object, args: object) -> dict:
@@ -115,12 +156,18 @@ def run_tool(command: object, args: object) -> dict:
         return {"status": "error", "error": {"code": "invalid_command", "message": f"Unknown command {command!r}"}}
     if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
         return {"status": "error", "error": {"code": "invalid_arguments", "message": "args must be a list of strings"}}
-    if any(".." in item for item in args):
-        return {"status": "error", "error": {"code": "invalid_arguments", "message": "Path traversal is not allowed."}}
-    completed = subprocess.run(
-        [sys.executable, "-m", "tools.pageviews", command, *args],
-        cwd=ROOT, capture_output=True, text=True, timeout=60,
-    )
+    for index, item in enumerate(args):
+        if item in PATH_ARGUMENT_FLAGS and index + 1 < len(args):
+            problem = _rejected_path_argument(args[index + 1])
+            if problem is not None:
+                return {"status": "error", "error": {"code": "invalid_arguments", "message": problem}}
+    try:
+        completed = subprocess.run(
+            [PYTHON, "-m", "tools.pageviews", command, *args],
+            cwd=ROOT, capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": {"code": "cli_timeout", "message": "The CLI call exceeded 180 seconds."}}
     try:
         return json.loads(completed.stdout)
     except ValueError:
@@ -143,10 +190,84 @@ def _parse_args(argv: list[str]) -> tuple[str | None, Path | None, str | None]:
     return scenario, resume, reply
 
 
+def _usage_totals(transcript: dict) -> dict:
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "model_requests": 0}
+    for event in transcript["events"]:
+        usage = event.get("usage") or {}
+        totals["prompt_tokens"] += usage.get("prompt_tokens", 0) or 0
+        totals["completion_tokens"] += usage.get("completion_tokens", 0) or 0
+        totals["model_requests"] += 1
+    return totals
+
+
+def run(messages: list, transcript: dict, *, base_url: str, api_key: str, model: str) -> str:
+    """Drive the conversation until the model asks a question, hits its budget,
+    or fails; always returns a status instead of raising, so the caller can save
+    the transcript no matter how the run ended."""
+    max_turns = int(os.environ.get("TREND_VISOR_EVAL_MAX_TURNS", "10"))
+    reasoning_tokens = os.environ.get("TREND_VISOR_EVAL_REASONING_TOKENS", str(DEFAULT_REASONING_TOKENS))
+    request_body = {
+        "model": model, "tools": TOOL_SCHEMA, "tool_choice": "auto",
+        "temperature": 0, "max_tokens": MAX_TOKENS,
+    }
+    if reasoning_tokens:
+        request_body["reasoning"] = {"max_tokens": int(reasoning_tokens)}
+
+    for turn in range(max_turns):
+        try:
+            payload = call_model(base_url, api_key, {**request_body, "messages": messages})
+        except ModelRequestError as error:
+            transcript["events"].append({"turn": turn, "error": str(error)})
+            return "model_request_failed"
+        choice = payload["choices"][0]
+        message, finish_reason = choice["message"], choice["finish_reason"]
+        transcript["events"].append({"turn": turn, "message": message, "finish_reason": finish_reason, "usage": payload.get("usage")})
+
+        calls = message.get("tool_calls") or []
+        assistant_message = {"role": "assistant", "content": message.get("content")}
+        if calls:
+            assistant_message["tool_calls"] = calls
+        messages.append(assistant_message)
+
+        if calls:
+            for call in calls:
+                function = call.get("function", {})
+                print(f"\n--- turn {turn}: tool call ---\n{function.get('name')}({function.get('arguments')})")
+                try:
+                    arguments = json.loads(function.get("arguments", "{}"))
+                except ValueError:
+                    arguments = {}
+                    function["arguments"] = "{}"  # keep conversation history valid for the next request
+                result = run_tool(arguments.get("command"), arguments.get("args"))
+                print(json.dumps(result, ensure_ascii=False, indent=2)[:MAX_TOOL_OUTPUT_CHARS])
+                transcript["events"][-1].setdefault("tool_results", []).append(result)
+                messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps(result, ensure_ascii=False)})
+            continue
+
+        content = message.get("content") or ""
+        had_visible_content = bool(content.strip())
+        if not had_visible_content and (message.get("reasoning") or "").strip():
+            # Some reasoning models park their real answer in "reasoning" and leave
+            # "content" empty; surface it instead of losing the answer as empty_stop,
+            # but flag it so a transcript review can tell this was a workaround.
+            content = message["reasoning"]
+            assistant_message["content"] = content
+            transcript["events"][-1]["content_recovered_from_reasoning"] = True
+            print(f"\n!!! turn {turn}: model left \"content\" empty; recovered visible text from \"reasoning\" instead.")
+        if finish_reason == "length" and not had_visible_content:
+            print(f"\n!!! turn {turn}: truncated before any visible content (finish_reason=length); "
+                  "the model used its entire completion budget without producing a visible answer. "
+                  "Any \"reasoning\" text printed above was cut off mid-generation and may be incomplete or looping "
+                  "rather than a real conclusion.")
+            return "truncated"
+        print(f"\n=== turn {turn}: model message ===\n{content}\n")
+        return "needs_human_reply" if content.strip() else "empty_stop"
+    return "budget_exhausted"
+
+
 def main() -> int:
     scenario_name, resume_path, reply = _parse_args(sys.argv[1:])
     base_url, model, api_key = load_config(ROOT / ".env")
-    os.environ.setdefault("TREND_VISOR_USER_AGENT", "trend-visor-eval/0.1 (dev live test; no contact)")
 
     if resume_path is not None:
         if not reply:
@@ -154,7 +275,6 @@ def main() -> int:
         transcript = json.loads(resume_path.read_text(encoding="utf-8"))
         messages = transcript["messages"]
         messages.append({"role": "user", "content": reply})
-        start_turn = len(transcript["events"])
     else:
         scenario_name = scenario_name or "fasting-pl-cs"
         if scenario_name not in SCENARIOS:
@@ -165,54 +285,24 @@ def main() -> int:
             {"role": "user", "content": SCENARIOS[scenario_name]},
         ]
         transcript = {"scenario": scenario_name, "model": model, "messages": messages, "events": []}
-        start_turn = 0
 
-    max_turns = int(os.environ.get("TREND_VISOR_EVAL_MAX_TURNS", "10"))
-    status = "budget_exhausted"
-    for turn in range(start_turn, start_turn + max_turns):
-        payload = call_model(base_url, api_key, {
-            "model": model, "messages": messages, "tools": TOOL_SCHEMA, "tool_choice": "auto",
-            "temperature": 0, "max_tokens": MAX_TOKENS, "reasoning": {"max_tokens": REASONING_TOKEN_CAP},
-        })
-        choice = payload["choices"][0]
-        message, finish_reason = choice["message"], choice["finish_reason"]
-        transcript["events"].append({"turn": turn, "message": message, "finish_reason": finish_reason, "usage": payload.get("usage")})
-
-        calls = message.get("tool_calls") or []
-        if finish_reason == "tool_calls" and calls:
-            call = calls[0]
-            print(f"\n--- turn {turn}: tool call ---\n{call['function']['name']}({call['function']['arguments']})")
-            try:
-                arguments = json.loads(call["function"]["arguments"])
-            except ValueError:
-                arguments = {}
-            result = run_tool(arguments.get("command"), arguments.get("args"))
-            print(json.dumps(result, ensure_ascii=False, indent=2)[:MAX_TOOL_OUTPUT_CHARS])
-            transcript["events"][-1]["tool_result"] = result
-            messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": [call]})
-            messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
-            continue
-
-        content = message.get("content") or ""
-        if finish_reason == "length" and not content.strip():
-            print(f"\n!!! turn {turn}: truncated before any visible content (finish_reason=length); "
-                  "the model used its entire completion budget without producing a visible answer.")
-            status = "truncated"
-        else:
-            print(f"\n=== turn {turn}: model message ===\n{content}\n")
-            status = "needs_human_reply" if content.strip() else "empty_stop"
-        break
-    else:
-        status = "budget_exhausted"
-
-    transcript["status"] = status
-    output = ROOT / "evals" / f"live-{transcript['scenario']}-{uuid4().hex}.json"
-    output.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nStatus: {status}. Saved transcript to {output}")
-    if status == "needs_human_reply":
-        print(f'Continue with: python3 evals/run_live.py --resume {output} --reply "<your reply>"')
+    try:
+        status = run(messages, transcript, base_url=base_url, api_key=api_key, model=model)
+    except Exception as error:  # noqa: BLE001 - always save the transcript, even on a bug
+        status = "error"
+        transcript["events"].append({"error": f"{type(error).__name__}: {error}"})
+    finally:
+        transcript["status"] = status
+        transcript["usage_totals"] = _usage_totals(transcript)
+        output = ROOT / "evals" / f"live-{transcript['scenario']}-{uuid4().hex}.json"
+        output.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\nStatus: {status}. Saved transcript to {output}")
+        print(f"Usage: {transcript['usage_totals']}")
+        if status == "needs_human_reply":
+            print(f'Continue with: .venv/bin/python evals/run_live.py --resume {output} --reply "<your reply>"')
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

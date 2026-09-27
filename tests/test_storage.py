@@ -114,9 +114,9 @@ class StorageTests(unittest.TestCase):
     def test_application_version_change_preserves_compatible_snapshot_and_cache(self):
         snapshot = self.save()
         metadata = json.loads((snapshot.directory / "metadata.json").read_bytes())
-        self.assertEqual(metadata["processor_version"], "0.0.1")
+        self.assertEqual(metadata["processor_version"], "0.1.0")
 
-        with patch("tools.pageviews.storage.__version__", "0.0.2"):
+        with patch("tools.pageviews.storage.__version__", "0.2.0"):
             self.assertEqual(read_snapshot(snapshot.directory), snapshot)
             self.assertEqual(load_snapshot(self.root, self.request), snapshot)
 

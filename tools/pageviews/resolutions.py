@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -9,7 +10,6 @@ from . import SCHEMA_VERSION
 from .article_checks import REDIRECT_BADGES, article_title, article_url
 from .artifacts import MAX_ARTIFACT_BYTES, JsonArtifact, save_json_artifact
 from .errors import PageviewsError
-from .json_codec import strict_json_loads
 from .models import normalize_article, normalize_project
 from .topic_data import (
     WikipediaSite, language_code, response_id, response_list,
@@ -177,7 +177,7 @@ def read_resolution(path: Path) -> ResolutionPlan:
         if len(body) > MAX_ARTIFACT_BYTES:
             raise PageviewsError("resolution_error", "Saved resolution exceeds 10 MiB.")
         digest = hashlib.sha256(body).hexdigest()
-        result = strict_json_loads(body)
+        result = json.loads(body)
     except PageviewsError:
         raise
     except (OSError, ValueError, RuntimeError) as error:
