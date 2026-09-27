@@ -9,4 +9,5 @@ assets/resolutions/
 assets/studies/
 assets/evaluations/
 assets/reports/
+evals/live-*.json
 .DS_Store
