@@ -11,7 +11,7 @@ metadata:
 
 ## Setup
 
-From this skill's directory, run `uv sync --locked --extra charts` once (installs Matplotlib into `.venv`; needs internet). Then use `.venv/bin/python -m tools.pageviews <command>`. Without the extra, `search`, `resolve`, `study` and `report` (without `--chart-dir`) still work with plain `python3 -m tools.pageviews`; only `chart` and report charts need the extra.
+From this skill's directory, run `uv sync --locked --extra charts` once (installs Matplotlib into `.venv`; needs internet). Then use `.venv/bin/python -m tools.pageviews <command>`. Without the extra, `search`, `resolve`, `study` and `report` (without `--chart-dir`) still work with plain `python3 -m tools.pageviews`; only `chart` and report charts need the extra. If `uv` itself isn't installed on this machine, don't try to install it — use plain `python3 -m tools.pageviews` for every command except `chart`/`--chart-dir`/`--pdf`; only fall back to `pip install matplotlib==3.11.2` yourself if the user specifically needs a chart and confirms it's fine to install a package.
 
 Every Wikimedia request needs a descriptive `--user-agent` with real contact info, or a `TREND_VISOR_USER_AGENT` environment variable set once. Set it locally; never put credentials in a report or prompt.
 

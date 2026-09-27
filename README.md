@@ -21,6 +21,15 @@ maintaining the code.
   and commit the result there (this repo's own skill folder is symlinked, so
   it can't just be copied as-is).
 
+### `uv: command not found`
+
+`uv` isn't part of Python; install it once with
+`curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`) and
+open a new shell. If you'd rather not install anything extra, skip `uv`
+entirely: plain `python3 -m tools.pageviews <command>` works for everything
+except `chart`/`--chart-dir`/`--pdf` (those need `pip install matplotlib==3.11.2`
+in whatever Python you're using).
+
 ## Install and run tests
 
 ```
