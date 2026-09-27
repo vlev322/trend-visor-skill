@@ -41,16 +41,7 @@ Without the `charts` extra, `python3 -m unittest discover -s tests` still runs;
 chart-dependent tests are skipped, not failed. See [SKILL.md](SKILL.md) for the
 actual commands (`search`, `resolve`, `study`, `report`, ...).
 
-## How this was built and checked
-
-The implementation was written with AI assistance and simplified in a second
-pass after a review found the first version overbuilt for the task (a
-model-evaluation harness, discovery/research state machines, and SHA256
-confirmation on every hand-off had grown larger than the actual data-analysis
-code). That simplification is preserved as the `pre-simplify` git tag if the
-earlier, more defensive version is ever needed for reference.
-
-Verification for both passes combined:
+Verification for passes combined:
 
 - **Unit tests** (`tests/`) mock every Wikimedia HTTP call and check the
   validation, caching, calendar/diagnostic math, and report text against
